@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.idea/
+.vscode/
+*.log
+*.tsbuildinfo
+.DS_Store
+capacitor.config.js
+capacitor.config.d.ts
+vite.config.js
+vite.config.d.ts
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FitSync</string>
+    <string name="title_activity_main">FitSync</string>
+    <string name="package_name">com.timdumol.fitsync</string>
+    <string name="custom_url_scheme">com.timdumol.fitsync</string>
+</resources>
