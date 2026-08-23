@@ -63,6 +63,23 @@ export interface AppSettings {
   effortMode: EffortMode;
 }
 
+export type SyncItemType = 'routine' | 'draft' | 'workout' | 'settings';
+
+export interface SyncMutation {
+  key: string;
+  itemType: SyncItemType;
+  itemId: string;
+  payload: Routine | ActiveWorkout | WorkoutRecord | AppSettings | null;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface SyncStatus {
+  phase: 'local' | 'idle' | 'syncing' | 'offline' | 'error';
+  lastSyncedAt: string | null;
+  message: string;
+}
+
 export type AppScreen =
   | 'train'
   | 'live'

@@ -1,6 +1,8 @@
 import type { Routine } from './types';
 
-const stamp = new Date().toISOString();
+// Keep seed timestamps stable so a fresh device cannot overwrite a newer
+// cloud-edited copy of one of the built-in routines during its first sync.
+const stamp = '2026-08-19T00:00:00.000Z';
 
 export const seedRoutines: Routine[] = [
   {

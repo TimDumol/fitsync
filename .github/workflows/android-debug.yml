@@ -13,6 +13,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      VITE_NEON_AUTH_URL: ${{ vars.VITE_NEON_AUTH_URL || 'https://ep-odd-dawn-axmsou05.neonauth.c-4.us-east-2.aws.neon.tech/neondb/auth' }}
+      VITE_NEON_DATA_API_URL: ${{ vars.VITE_NEON_DATA_API_URL || 'https://ep-odd-dawn-axmsou05.apirest.c-4.us-east-2.aws.neon.tech/neondb/rest/v1' }}
     steps:
       - uses: actions/checkout@v4
 

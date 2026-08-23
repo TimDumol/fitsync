@@ -13,3 +13,6 @@ android/.gradle/
 android/local.properties
 android/app/build/
 android/build/
+.env
+.env.*
+!.env.example

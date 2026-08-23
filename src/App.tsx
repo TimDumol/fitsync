@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
+  Cloud,
+  CloudOff,
   Dumbbell,
   Ellipsis,
   HardDrive,
@@ -13,13 +15,18 @@ import {
   MessageSquareText,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Settings,
   SkipForward,
   Smartphone,
-  Trash2
+  Trash2,
+  UserPlus,
+  LogIn,
+  LogOut
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getSession, isNeonConfigured, signIn, signOut, signUp, type AuthSession } from './neon';
 import {
   deleteDraft,
   getLatestDraft,
@@ -30,12 +37,14 @@ import {
   putRoutine,
   putWorkout
 } from './storage';
+import { syncWithNeon } from './sync';
 import type {
   ActiveWorkout,
   AppScreen,
   AppSettings,
   PerformedExercise,
   Routine,
+  SyncStatus,
   WorkoutRecord
 } from './types';
 
@@ -160,10 +169,29 @@ function App() {
   const [now, setNow] = useState(Date.now());
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState('');
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [authReady, setAuthReady] = useState(!isNeonConfigured);
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [syncRevision, setSyncRevision] = useState(0);
+  const syncInFlight = useRef(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    phase: 'local',
+    lastSyncedAt: localStorage.getItem('fitsync-last-synced-at'),
+    message: 'Saved on device'
+  });
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('fitsync-settings');
     return saved ? (JSON.parse(saved) as AppSettings) : defaultSettings;
   });
+  const [settingsUpdatedAt, setSettingsUpdatedAt] = useState(() =>
+    localStorage.getItem('fitsync-settings-updated-at')
+    ?? (localStorage.getItem('fitsync-settings') ? new Date().toISOString() : '1970-01-01T00:00:00.000Z')
+  );
+  const settingsUpdatedAtRef = useRef(settingsUpdatedAt);
 
   useEffect(() => {
     let active = true;
@@ -186,13 +214,52 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!isNeonConfigured) return;
+    let active = true;
+    void getSession()
+      .then((session) => {
+        if (!active) return;
+        setAuthSession(session);
+        setSyncStatus((current) => ({
+          ...current,
+          phase: session ? 'idle' : 'local',
+          message: session ? 'Ready to sync' : 'Saved on device'
+        }));
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setSyncStatus((current) => ({ ...current, phase: 'error', message: error instanceof Error ? error.message : 'Could not check account' }));
+      })
+      .finally(() => {
+        if (active) setAuthReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
     localStorage.setItem('fitsync-settings', JSON.stringify(settings));
-  }, [settings]);
+    localStorage.setItem('fitsync-settings-updated-at', settingsUpdatedAt);
+    settingsUpdatedAtRef.current = settingsUpdatedAt;
+  }, [settings, settingsUpdatedAt]);
+
+  useEffect(() => {
+    if (!ready || !authSession) return;
+    const timer = window.setTimeout(() => void syncNow(true), syncRevision === 0 ? 0 : 1200);
+    return () => window.clearTimeout(timer);
+  }, [ready, authSession?.user.id, syncRevision]);
+
+  useEffect(() => {
+    const handleOnline = () => setSyncRevision((revision) => revision + 1);
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, []);
 
   const completedSets = useMemo(
     () => draft?.exercises.flatMap((exercise) => exercise.sets).filter((set) => set.completed).length ?? 0,
@@ -204,11 +271,94 @@ function App() {
   );
   const restSeconds = draft?.restEndsAt ? Math.max(0, Math.ceil((Date.parse(draft.restEndsAt) - now) / 1000)) : 0;
 
+  function markForSync() {
+    setSyncRevision((revision) => revision + 1);
+  }
+
+  function updateSettings(next: AppSettings) {
+    const updatedAt = new Date().toISOString();
+    setSettings(next);
+    setSettingsUpdatedAt(updatedAt);
+    settingsUpdatedAtRef.current = updatedAt;
+    markForSync();
+  }
+
+  async function syncNow(quiet = false) {
+    if (!authSession || syncInFlight.current) return;
+    if (!navigator.onLine) {
+      setSyncStatus((current) => ({ ...current, phase: 'offline', message: 'Offline · changes queued' }));
+      return;
+    }
+    syncInFlight.current = true;
+    const startingSettingsUpdatedAt = settingsUpdatedAt;
+    setSyncStatus((current) => ({ ...current, phase: 'syncing', message: 'Syncing…' }));
+    try {
+      const result = await syncWithNeon(authSession.user.id, settings, settingsUpdatedAt);
+      setRoutines(result.routines);
+      setWorkouts(result.workouts);
+      setDraft(result.drafts.at(-1) ?? null);
+      if (Date.parse(result.settingsUpdatedAt) >= Date.parse(settingsUpdatedAtRef.current)) {
+        setSettings(result.settings);
+        setSettingsUpdatedAt(result.settingsUpdatedAt);
+        settingsUpdatedAtRef.current = result.settingsUpdatedAt;
+      }
+      localStorage.setItem('fitsync-last-synced-at', result.syncedAt);
+      setSyncStatus({ phase: 'idle', lastSyncedAt: result.syncedAt, message: `Synced ${result.itemCount} items` });
+      if (result.pendingCount > 0 || startingSettingsUpdatedAt !== settingsUpdatedAtRef.current) markForSync();
+      if (!quiet) setNotice('Your FitSync data is up to date.');
+    } catch (error) {
+      setSyncStatus((current) => ({ ...current, phase: 'error', message: error instanceof Error ? error.message : 'Sync failed' }));
+      if (!quiet) setNotice('Sync failed. Your changes are still saved on this device.');
+    } finally {
+      syncInFlight.current = false;
+    }
+  }
+
+  async function submitAuth(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setNotice('');
+    try {
+      const session = authMode === 'sign-in'
+        ? await signIn(authEmail, authPassword)
+        : await signUp(authName || authEmail.split('@')[0], authEmail, authPassword);
+      setAuthSession(session);
+      setAuthPassword('');
+      if (session) {
+        setSyncStatus((current) => ({ ...current, phase: 'idle', message: 'Ready to sync' }));
+        markForSync();
+        setNotice(`Signed in as ${session.user.email}.`);
+      } else {
+        setNotice('Account created. Check your email if verification is required, then sign in.');
+        setAuthMode('sign-in');
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Authentication failed.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function disconnectAccount() {
+    setAuthBusy(true);
+    try {
+      await signOut();
+      setAuthSession(null);
+      setSyncStatus((current) => ({ ...current, phase: 'local', message: 'Saved on device' }));
+      setNotice('Signed out. Your local data remains on this device.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not sign out.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   function updateDraft(transform: (current: ActiveWorkout) => ActiveWorkout) {
     setDraft((current) => {
       if (!current) return current;
       const next = { ...transform(current), updatedAt: new Date().toISOString() };
       void putDraft(next);
+      markForSync();
       return next;
     });
   }
@@ -217,6 +367,7 @@ function App() {
     const next = buildWorkout(routine);
     await putDraft(next);
     setDraft(next);
+    markForSync();
     setScreen('live');
   }
 
@@ -324,6 +475,7 @@ function App() {
     setDraft(null);
     setWorkouts(await listWorkouts());
     setCompletedWorkout(record);
+    markForSync();
     setScreen('summary');
   }
 
@@ -334,6 +486,7 @@ function App() {
     setRoutines(await listRoutines());
     setEditingRoutine(null);
     setNotice(`${next.name} saved on this device.`);
+    markForSync();
     setScreen('train');
   }
 
@@ -531,7 +684,7 @@ function App() {
         <div className="completion-icon"><Check size={28} /></div><h1>Workout complete</h1><p className="subtitle">{completedWorkout.title} has been saved on this device.</p>
         <SummaryCard workout={completedWorkout} weightUnit={settings.weightUnit} />
         <label className="summary-note">Quick note<textarea placeholder="How did the session feel?" value={completedWorkout.notes} onChange={(event) => setCompletedWorkout({ ...completedWorkout, notes: event.target.value })} /></label>
-        <button className="primary-action full-action" type="button" onClick={async () => { await putWorkout(completedWorkout); setWorkouts(await listWorkouts()); setScreen('history'); }}>Done</button>
+        <button className="primary-action full-action" type="button" onClick={async () => { await putWorkout(completedWorkout); setWorkouts(await listWorkouts()); markForSync(); setScreen('history'); }}>Done</button>
       </section>
     );
   }
@@ -539,14 +692,35 @@ function App() {
   function renderSettings() {
     return (
       <section className="app-screen">
-        <div className="eyebrow">Local preferences</div><h1>Settings</h1><p className="subtitle">No account or cloud connection is configured.</p>
+        <div className="eyebrow">Preferences & account</div><h1>Settings</h1><p className="subtitle">FitSync stays local-first and syncs through Neon when you sign in.</p>
         <div className="section-heading"><h2>Workout defaults</h2></div>
         <div className="form-stack">
-          <label>Weight unit<select value={settings.weightUnit} onChange={(event) => setSettings({ ...settings, weightUnit: event.target.value as AppSettings['weightUnit'] })}><option value="kg">Kilograms</option><option value="lb">Pounds</option></select></label>
-          <label>Default rest timer<select value={settings.defaultRestSeconds} onChange={(event) => setSettings({ ...settings, defaultRestSeconds: Number(event.target.value) })}><option value={90}>90 seconds</option><option value={120}>2 minutes</option><option value={180}>3 minutes</option></select></label>
-          <label>Effort scale<select value={settings.effortMode} onChange={(event) => setSettings({ ...settings, effortMode: event.target.value as AppSettings['effortMode'] })}><option>RPE</option><option>RIR</option><option>Hidden</option></select></label>
+          <label>Weight unit<select value={settings.weightUnit} onChange={(event) => updateSettings({ ...settings, weightUnit: event.target.value as AppSettings['weightUnit'] })}><option value="kg">Kilograms</option><option value="lb">Pounds</option></select></label>
+          <label>Default rest timer<select value={settings.defaultRestSeconds} onChange={(event) => updateSettings({ ...settings, defaultRestSeconds: Number(event.target.value) })}><option value={90}>90 seconds</option><option value={120}>2 minutes</option><option value={180}>3 minutes</option></select></label>
+          <label>Effort scale<select value={settings.effortMode} onChange={(event) => updateSettings({ ...settings, effortMode: event.target.value as AppSettings['effortMode'] })}><option>RPE</option><option>RIR</option><option>Hidden</option></select></label>
         </div>
-        <div className="notice"><HardDrive size={18} /> Workouts and routines remain on this device.</div>
+        <div className="section-heading"><h2>Neon Sync</h2></div>
+        {!isNeonConfigured && <div className="notice"><CloudOff size={18} /> This build has no Neon endpoints. Add the two Vite environment variables to enable accounts and sync.</div>}
+        {isNeonConfigured && !authReady && <div className="account-card"><RefreshCw className="spin" size={20} /><span>Checking your account…</span></div>}
+        {isNeonConfigured && authReady && authSession && (
+          <article className="account-card account-card-signed-in">
+            <div><Cloud size={21} /><span><strong>{authSession.user.name || 'FitSync account'}</strong><small>{authSession.user.email}</small></span></div>
+            <p>{syncStatus.message}{syncStatus.lastSyncedAt ? ` · ${new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(syncStatus.lastSyncedAt))}` : ''}</p>
+            <div className="split-actions account-actions"><button className="secondary-action" type="button" disabled={syncStatus.phase === 'syncing'} onClick={() => void syncNow()}><RefreshCw className={syncStatus.phase === 'syncing' ? 'spin' : ''} size={17} /> Sync now</button><button className="secondary-action" type="button" disabled={authBusy} onClick={() => void disconnectAccount()}><LogOut size={17} /> Sign out</button></div>
+          </article>
+        )}
+        {isNeonConfigured && authReady && !authSession && (
+          <article className="account-card">
+            <div className="auth-tabs"><button type="button" className={authMode === 'sign-in' ? 'active' : ''} onClick={() => setAuthMode('sign-in')}>Sign in</button><button type="button" className={authMode === 'sign-up' ? 'active' : ''} onClick={() => setAuthMode('sign-up')}>Create account</button></div>
+            <form className="form-stack" onSubmit={(event) => void submitAuth(event)}>
+              {authMode === 'sign-up' && <label>Name<input autoComplete="name" value={authName} onChange={(event) => setAuthName(event.target.value)} required /></label>}
+              <label>Email<input type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required /></label>
+              <label>Password<input type="password" minLength={8} autoComplete={authMode === 'sign-in' ? 'current-password' : 'new-password'} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required /></label>
+              <button className="primary-action full-action" type="submit" disabled={authBusy}>{authMode === 'sign-in' ? <LogIn size={17} /> : <UserPlus size={17} />}{authBusy ? 'Please wait…' : authMode === 'sign-in' ? 'Sign in & sync' : 'Create account'}</button>
+            </form>
+          </article>
+        )}
+        <div className="notice"><HardDrive size={18} /> Local saves continue offline. Signed-in changes sync automatically when a connection is available.</div>
       </section>
     );
   }
@@ -566,7 +740,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-bar"><strong>FitSync</strong><span><Smartphone size={15} /> Saved on device</span></header>
+      <header className="app-bar"><strong>FitSync</strong><span>{authSession ? (syncStatus.phase === 'offline' || syncStatus.phase === 'error' ? <CloudOff size={15} /> : <Cloud size={15} />) : <Smartphone size={15} />}{authSession ? syncStatus.message : 'Saved on device'}</span></header>
       <main>{appScreens[screen]()}</main>
       {showNavigation && (
         <nav className="bottom-nav" aria-label="Primary navigation">

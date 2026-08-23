@@ -1,0 +1,77 @@
+name: Android APK release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VITE_NEON_AUTH_URL: ${{ vars.VITE_NEON_AUTH_URL || 'https://ep-odd-dawn-axmsou05.neonauth.c-4.us-east-2.aws.neon.tech/neondb/auth' }}
+      VITE_NEON_DATA_API_URL: ${{ vars.VITE_NEON_DATA_API_URL || 'https://ep-odd-dawn-axmsou05.apirest.c-4.us-east-2.aws.neon.tech/neondb/rest/v1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Prepare release asset
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9] ]]; then
+            echo "Release tag must start with v followed by a number (for example v0.2.0)." >&2
+            exit 1
+          fi
+
+          asset="fitsync-${RELEASE_TAG}-debug.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$asset"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_ASSET: ${{ steps.release.outputs.asset }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$RELEASE_ASSET" \
+              --target "$GITHUB_SHA" \
+              --title "FitSync $RELEASE_TAG" \
+              --generate-notes \
+              --notes "Download the attached APK for direct Android installation. This is a debug build intended for testing."
