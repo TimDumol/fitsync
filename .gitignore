@@ -1,0 +1,13 @@
+.venv/
+.venv-wsl/
+.private/
+data/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
