@@ -1,0 +1,95 @@
+services:
+  caddy:
+    image: caddy:2.11.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      pocketid:
+        condition: service_healthy
+      fitnessd:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  pocketid:
+    image: ghcr.io/pocket-id/pocket-id:v2.12.0
+    restart: unless-stopped
+    expose:
+      - "1411"
+    volumes:
+      - ./data/pocketid:/app/data
+    environment:
+      APP_URL: https://auth.aries.timdumol.com
+      ENCRYPTION_KEY_FILE: /run/secrets/pocketid_encryption_key
+      ALLOW_INSECURE_CALLBACK_URLS: "false"
+      TRUST_PROXY: "true"
+    secrets:
+      - pocketid_encryption_key
+    healthcheck:
+      test: ["CMD", "/app/pocket-id", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  fitnessd:
+    build: .
+    restart: unless-stopped
+    command: ["serve"]
+    expose:
+      - "3000"
+    volumes:
+      - ./data/fitnessd:/data
+      - ./data/archives:/var/lib/fitnessd/archives
+      - ./data/neon_dump:/import/neon_dump:ro
+    environment:
+      DB_PATH: /data/fitness.db
+      ARCHIVE_DIR: /var/lib/fitnessd/archives
+      FITNESSD_ADDR: ":3000"
+      POCKETID_ISSUER: https://auth.aries.timdumol.com
+      MCP_RESOURCE: https://api.aries.timdumol.com/mcp
+      TRUST_PROXY: "true"
+      FITNESS_INGEST_TIM_TOKEN_FILE: /run/secrets/fitness_ingest_tim_token
+      FITNESS_INGEST_JOPI_TOKEN_FILE: /run/secrets/fitness_ingest_jopi_token
+    secrets:
+      - fitness_ingest_tim_token
+      - fitness_ingest_jopi_token
+    healthcheck:
+      test: ["CMD", "fitnessd", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+secrets:
+  pocketid_encryption_key:
+    file: ./secrets/pocketid_encryption_key
+  fitness_ingest_tim_token:
+    file: ./secrets/fitness_ingest_tim_token
+  fitness_ingest_jopi_token:
+    file: ./secrets/fitness_ingest_jopi_token
+
+volumes:
+  caddy_data:
+  caddy_config:

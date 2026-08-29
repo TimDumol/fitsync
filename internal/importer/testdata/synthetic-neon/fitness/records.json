@@ -1,0 +1,4 @@
+[
+  {"dataset":"activities","record_key":"activity-1","record_date":"2026-01-02","synced_at":"2026-01-03T00:00:00Z","payload_sha256":"0000000000000000000000000000000000000000000000000000000000000000","payload":{"activity_id":"activity-1","activity_name":"Synthetic Run"}},
+  {"dataset":"activity_details","record_key":"detail-1","record_date":null,"synced_at":"2026-01-03T00:00:01Z","payload_sha256":"1111111111111111111111111111111111111111111111111111111111111111","payload":{"activity_id":"activity-1","metric_time_series":[]}}
+]

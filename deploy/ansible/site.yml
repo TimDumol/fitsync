@@ -1,0 +1,834 @@
+---
+- name: Deploy Fitnessd behind the existing Aprendiendo Caddy edge
+  hosts: aries
+  gather_facts: true
+  become: false
+  vars:
+    fitness_compose_candidate: >-
+      {{ '/tmp/fitsync-compose.production.yaml.check' if ansible_check_mode else fitness_compose_next }}
+
+  pre_tasks:
+    - name: Require a non-root passwordless-SSH deployment account
+      ansible.builtin.assert:
+        that:
+          - ansible_user_id != 'root'
+          - ansible_user is defined
+          - ansible_user | length > 0
+        fail_msg: >-
+          Connect with the passwordless-SSH deployment account from the
+          committed inventory; do not run this playbook as root.
+
+    - name: Verify passwordless sudo before making changes
+      ansible.builtin.command:
+        argv: [sudo, -n, 'true']
+      check_mode: false
+      changed_when: false
+      failed_when: sudo_check.rc != 0
+      register: sudo_check
+
+    - name: Install Docker and deployment prerequisites
+      become: true
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - docker.io
+          - docker-compose-v2
+          - openssl
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker is enabled and running
+      become: true
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Verify the coordinated Aprendiendo Compose contract
+      become: true
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --file
+          - "{{ aprendiendo_compose_file }}"
+          - config
+          - --quiet
+      args:
+        chdir: "{{ aprendiendo_app_dir }}"
+      check_mode: false
+      changed_when: false
+
+    - name: Verify Aprendiendo Caddy mounts the shared sites directory
+      become: true
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - "/opt/caddy/sites-enabled:/etc/caddy/sites-enabled:ro"
+          - "{{ aprendiendo_compose_file }}"
+      check_mode: false
+      changed_when: false
+      register: aprendiendo_sites_mount
+      failed_when: false
+
+    - name: Verify Aprendiendo Caddy joins caddy-edge
+      become: true
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - caddy-edge
+          - "{{ aprendiendo_compose_file }}"
+      check_mode: false
+      changed_when: false
+      register: aprendiendo_edge_network
+      failed_when: false
+
+    - name: Verify Aprendiendo imports Fitnessd site fragments
+      become: true
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - "import sites-enabled/*"
+          - "{{ aprendiendo_app_dir }}/Caddyfile"
+      check_mode: false
+      changed_when: false
+      register: aprendiendo_caddy_import
+      failed_when: false
+
+    - name: Stop before deployment if Aprendiendo has not been coordinated
+      ansible.builtin.assert:
+        that:
+          - aprendiendo_sites_mount.rc == 0
+          - aprendiendo_edge_network.rc == 0
+          - aprendiendo_caddy_import.rc == 0
+        fail_msg: >-
+          Deploy the coordinated Aprendiendo release first. Its Caddy Compose
+          service must mount /opt/caddy/sites-enabled read-only, join
+          caddy-edge, and import sites-enabled/*.
+
+    - name: Find the existing Aprendiendo Caddy container
+      become: true
+      ansible.builtin.shell: >-
+        docker compose --file {{ aprendiendo_compose_file }} ps -q caddy
+      args:
+        chdir: "{{ aprendiendo_app_dir }}"
+      check_mode: false
+      changed_when: false
+      register: caddy_container
+
+    - name: Require the existing Aprendiendo Caddy container
+      ansible.builtin.assert:
+        that: caddy_container.stdout | trim | length > 0
+        fail_msg: >-
+          Aprendiendo's existing Caddy container is not running. Start that
+          deployment before installing the Fitnessd site fragment.
+
+    - name: Inspect previous Fitnessd deployment files
+      become: true
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ fitness_compose_file }}"
+        - "{{ fitness_site_file }}"
+      register: previous_fitness_files
+
+    - name: Record previous deployment state
+      ansible.builtin.set_fact:
+        previous_compose_exists: "{{ previous_fitness_files.results[0].stat.exists }}"
+        previous_site_exists: "{{ previous_fitness_files.results[1].stat.exists }}"
+
+  tasks:
+    - name: Inspect caddy-edge
+      become: true
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - inspect
+          - --format
+          - "{{ '{{' }}.Driver{{ '}}' }}"
+          - caddy-edge
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      register: caddy_edge_inspect
+
+    - name: Reject an existing caddy-edge network with the wrong driver
+      ansible.builtin.assert:
+        that:
+          - caddy_edge_inspect.rc != 0 or caddy_edge_inspect.stdout | trim == 'bridge'
+        fail_msg: caddy-edge exists but is not a Docker bridge network.
+
+    - name: Create the external caddy-edge bridge when absent
+      become: true
+      ansible.builtin.command:
+        argv: [docker, network, create, --driver, bridge, caddy-edge]
+      when:
+        - caddy_edge_inspect.rc != 0
+        - not ansible_check_mode
+      check_mode: false
+      changed_when: true
+
+    - name: Create Fitnessd directories without touching persistent contents
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: "{{ fitness_deploy_root }}", owner: root, group: root, mode: '0755'}
+        - {path: "{{ fitness_app_dir }}", owner: root, group: root, mode: '0755'}
+        - {path: "{{ fitness_data_dir }}", owner: root, group: root, mode: '0755'}
+        - {path: "{{ fitnessd_data_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}", mode: '0700'}
+        - {path: "{{ pocketid_data_dir }}", owner: "{{ pocketid_uid }}", group: "{{ pocketid_gid }}", mode: '0700'}
+        - {path: "{{ fitness_archive_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}", mode: '0700'}
+        - {path: "{{ fitness_neon_dump_dir }}", owner: root, group: "{{ fitnessd_gid }}", mode: '0750'}
+        - {path: "{{ fitness_secret_dir }}", owner: root, group: root, mode: '0700'}
+        - {path: "{{ fitness_rollback_dir }}", owner: root, group: root, mode: '0700'}
+        - {path: "{{ aprendiendo_caddy_sites_dir }}", owner: root, group: root, mode: '0755'}
+
+    - name: Align persistent data ownership with the container users
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        recurse: true
+      loop:
+        - {path: "{{ fitnessd_data_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
+        - {path: "{{ pocketid_data_dir }}", owner: "{{ pocketid_uid }}", group: "{{ pocketid_gid }}"}
+        - {path: "{{ fitness_archive_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
+
+    - name: Find directories in the read-only Neon import
+      become: true
+      ansible.builtin.find:
+        paths: "{{ fitness_neon_dump_dir }}"
+        file_type: directory
+        recurse: true
+      register: neon_import_directories
+
+    - name: Keep Neon import directories root-owned and non-writable
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: "{{ fitnessd_gid }}"
+        mode: '0750'
+      loop: "{{ neon_import_directories.files }}"
+
+    - name: Find files in the read-only Neon import
+      become: true
+      ansible.builtin.find:
+        paths: "{{ fitness_neon_dump_dir }}"
+        file_type: file
+        recurse: true
+      register: neon_import_files
+
+    - name: Keep Neon import files root-owned and readable by Fitnessd
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: "{{ fitnessd_gid }}"
+        mode: '0640'
+      loop: "{{ neon_import_files.files }}"
+
+    - name: Upload the deliberate Fitnessd build allowlist
+      become: true
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../{{ item }}"
+        dest: "{{ fitness_app_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - Dockerfile
+        - go.mod
+        - go.sum
+
+    - name: Upload only the source directories used by the Fitnessd image
+      become: true
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../{{ item }}"
+        dest: "{{ fitness_app_dir }}/"
+        owner: root
+        group: root
+        directory_mode: '0755'
+      loop:
+        - cmd
+        - internal
+        - migrations
+
+    - name: Check server-side secret files
+      become: true
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - {name: pocketid, path: "{{ fitness_secret_dir }}/pocketid_encryption_key"}
+        - {name: tim, path: "{{ fitness_secret_dir }}/fitness_ingest_tim_token"}
+        - {name: jopi, path: "{{ fitness_secret_dir }}/fitness_ingest_jopi_token"}
+      register: secret_files
+      no_log: true
+
+    - name: Enforce secret ownership and permissions on every run
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: '0400'
+      loop:
+        - {path: "{{ fitness_secret_dir }}/pocketid_encryption_key", owner: "{{ pocketid_uid }}", group: "{{ pocketid_gid }}"}
+        - {path: "{{ fitness_secret_dir }}/fitness_ingest_tim_token", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
+        - {path: "{{ fitness_secret_dir }}/fitness_ingest_jopi_token", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
+      when: secret_files.results[ansible_loop.index0].stat.exists
+      loop_control:
+        extended: true
+      no_log: true
+
+    - name: Validate operator-supplied secret lengths
+      ansible.builtin.assert:
+        that:
+          - (fitness_pocketid_encryption_key | default('') | length == 0) or (fitness_pocketid_encryption_key | length >= 16)
+          - (fitness_ingest_tim_token | default('') | length == 0) or (fitness_ingest_tim_token | length >= 32)
+          - (fitness_ingest_jopi_token | default('') | length == 0) or (fitness_ingest_jopi_token | length >= 32)
+        fail_msg: >-
+          Supplied secrets are too short. Pocket ID keys need at least 16
+          characters and ingest tokens need at least 32.
+      no_log: true
+
+    - name: Install the Pocket ID key supplied through Ansible Vault
+      become: true
+      ansible.builtin.copy:
+        content: "{{ fitness_pocketid_encryption_key }}"
+        dest: "{{ fitness_secret_dir }}/pocketid_encryption_key"
+        owner: "{{ pocketid_uid }}"
+        group: "{{ pocketid_gid }}"
+        mode: '0400'
+      when:
+        - not secret_files.results[0].stat.exists
+        - fitness_pocketid_encryption_key | default('') | length > 0
+      no_log: true
+
+    - name: Generate a Pocket ID key on the server when absent
+      become: true
+      ansible.builtin.command: openssl rand -hex 32
+      register: generated_pocketid_key
+      when:
+        - not secret_files.results[0].stat.exists
+        - fitness_pocketid_encryption_key | default('') | length == 0
+      changed_when: true
+      no_log: true
+
+    - name: Store the generated Pocket ID key without a trailing newline
+      become: true
+      ansible.builtin.copy:
+        content: "{{ generated_pocketid_key.stdout }}"
+        dest: "{{ fitness_secret_dir }}/pocketid_encryption_key"
+        owner: "{{ pocketid_uid }}"
+        group: "{{ pocketid_gid }}"
+        mode: '0400'
+      when: generated_pocketid_key is defined and generated_pocketid_key.changed | default(false)
+      no_log: true
+
+    - name: Install the Tim ingest token supplied through Ansible Vault
+      become: true
+      ansible.builtin.copy:
+        content: "{{ fitness_ingest_tim_token }}"
+        dest: "{{ fitness_secret_dir }}/fitness_ingest_tim_token"
+        owner: "{{ fitnessd_uid }}"
+        group: "{{ fitnessd_gid }}"
+        mode: '0400'
+      when:
+        - not secret_files.results[1].stat.exists
+        - fitness_ingest_tim_token | default('') | length > 0
+      no_log: true
+
+    - name: Generate the Tim ingest token on the server when absent
+      become: true
+      ansible.builtin.command: openssl rand -hex 32
+      register: generated_tim_token
+      when:
+        - not secret_files.results[1].stat.exists
+        - fitness_ingest_tim_token | default('') | length == 0
+      changed_when: true
+      no_log: true
+
+    - name: Store the generated Tim ingest token without a trailing newline
+      become: true
+      ansible.builtin.copy:
+        content: "{{ generated_tim_token.stdout }}"
+        dest: "{{ fitness_secret_dir }}/fitness_ingest_tim_token"
+        owner: "{{ fitnessd_uid }}"
+        group: "{{ fitnessd_gid }}"
+        mode: '0400'
+      when: generated_tim_token is defined and generated_tim_token.changed | default(false)
+      no_log: true
+
+    - name: Install the Jopi ingest token supplied through Ansible Vault
+      become: true
+      ansible.builtin.copy:
+        content: "{{ fitness_ingest_jopi_token }}"
+        dest: "{{ fitness_secret_dir }}/fitness_ingest_jopi_token"
+        owner: "{{ fitnessd_uid }}"
+        group: "{{ fitnessd_gid }}"
+        mode: '0400'
+      when:
+        - not secret_files.results[2].stat.exists
+        - fitness_ingest_jopi_token | default('') | length > 0
+      no_log: true
+
+    - name: Generate the Jopi ingest token on the server when absent
+      become: true
+      ansible.builtin.command: openssl rand -hex 32
+      register: generated_jopi_token
+      when:
+        - not secret_files.results[2].stat.exists
+        - fitness_ingest_jopi_token | default('') | length == 0
+      changed_when: true
+      no_log: true
+
+    - name: Store the generated Jopi ingest token without a trailing newline
+      become: true
+      ansible.builtin.copy:
+        content: "{{ generated_jopi_token.stdout }}"
+        dest: "{{ fitness_secret_dir }}/fitness_ingest_jopi_token"
+        owner: "{{ fitnessd_uid }}"
+        group: "{{ fitnessd_gid }}"
+        mode: '0400'
+      when: generated_jopi_token is defined and generated_jopi_token.changed | default(false)
+      no_log: true
+
+    - name: Render the candidate production Compose file
+      become: true
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/compose.production.yaml.j2"
+        dest: "{{ fitness_compose_candidate }}"
+        owner: root
+        group: root
+        mode: '0644'
+      check_mode: false
+
+    - name: Validate candidate Compose before changing running containers
+      become: true
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --file
+          - "{{ fitness_compose_candidate }}"
+          - config
+          - --quiet
+      args:
+        chdir: "{{ fitness_app_dir }}"
+      check_mode: false
+      changed_when: false
+
+    - name: Remove the check-mode Compose candidate
+      become: true
+      ansible.builtin.file:
+        path: "{{ fitness_compose_candidate }}"
+        state: absent
+      when: ansible_check_mode
+      check_mode: false
+
+    - name: End after the check-mode candidate validation
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
+
+    - name: Deploy with transactional Compose and Caddy rollback
+      block:
+        - name: Preserve the previous Compose file before promotion
+          become: true
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ fitness_compose_file }}"
+            dest: "{{ fitness_compose_previous }}"
+            owner: root
+            group: root
+            mode: '0644'
+          when: previous_compose_exists
+
+        - name: Promote the validated Compose file
+          become: true
+          ansible.builtin.command:
+            argv: [mv, "{{ fitness_compose_next }}", "{{ fitness_compose_file }}"]
+          register: compose_promoted
+          changed_when: true
+
+        - name: Render the candidate Caddy site fragment outside the import glob
+          become: true
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/templates/fitsync.caddy.j2"
+            dest: "{{ fitness_site_next }}"
+            owner: root
+            group: root
+            mode: '0644'
+
+        - name: Preserve the previous Caddy fragment before promotion
+          become: true
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ fitness_site_file }}"
+            dest: "{{ fitness_site_previous }}"
+            owner: root
+            group: root
+            mode: '0644'
+          when: previous_site_exists
+
+        - name: Promote the candidate Caddy fragment before backend startup
+          become: true
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ fitness_site_next }}"
+            dest: "{{ fitness_site_file }}"
+            owner: root
+            group: root
+            mode: '0644'
+          register: site_promoted
+
+        - name: Validate the full Caddy configuration before backend startup
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - validate
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: false
+
+        - name: Reload Caddy so public OIDC discovery is available to Fitnessd
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - reload
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: true
+
+        - name: Build and start Pocket ID before Fitnessd
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fitness_compose_file }}"
+              - up
+              - --detach
+              - --build
+              - --remove-orphans
+              - pocketid
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          changed_when: true
+
+        - name: Wait for Pocket ID health before Fitnessd startup
+          become: true
+          ansible.builtin.shell: >-
+            container_id="$(docker compose --file {{ fitness_compose_file }} ps -q pocketid)" &&
+            test -n "$container_id" &&
+            test "$(docker inspect --format '{{ "{{" }}.State.Health.Status{{ "}}" }}' "$container_id")" = healthy
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          register: pocketid_health
+          changed_when: false
+          retries: "{{ fitness_health_retries }}"
+          delay: 5
+          until: pocketid_health.rc == 0
+
+        - name: Wait for public Pocket ID OIDC discovery
+          become: true
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --fail
+              - --silent
+              - --show-error
+              - --output
+              - /dev/null
+              - --max-time
+              - "10"
+              - "https://{{ fitness_auth_domain }}/.well-known/openid-configuration"
+          register: pocketid_discovery
+          changed_when: false
+          retries: "{{ fitness_health_retries }}"
+          delay: 5
+          until: pocketid_discovery.rc == 0
+
+        - name: Build and start Fitnessd after Pocket ID discovery is ready
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fitness_compose_file }}"
+              - up
+              - --detach
+              - --build
+              - fitnessd
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          changed_when: true
+
+        - name: Wait for Fitnessd health
+          become: true
+          ansible.builtin.shell: >-
+            container_id="$(docker compose --file {{ fitness_compose_file }} ps -q fitnessd)" &&
+            test -n "$container_id" &&
+            test "$(docker inspect --format '{{ "{{" }}.State.Health.Status{{ "}}" }}' "$container_id")" = healthy
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          register: fitnessd_health
+          changed_when: false
+          retries: "{{ fitness_health_retries }}"
+          delay: 5
+          until: fitnessd_health.rc == 0
+
+        - name: Revalidate the full Caddy configuration after backend startup
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - validate
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: false
+
+        - name: Reload the validated Caddy configuration
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - reload
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: true
+
+        - name: Check public Mars health after the edge reload
+          ansible.builtin.uri:
+            url: https://mars.timdumol.com/health
+            status_code: 200
+            validate_certs: true
+            return_content: false
+          register: mars_health
+          retries: "{{ fitness_public_retries }}"
+          delay: 5
+          until: mars_health.status | default(0) == 200
+
+        - name: Check public Fitnessd health after the edge reload
+          ansible.builtin.uri:
+            url: https://{{ fitness_api_domain }}/healthz
+            status_code: 200
+            validate_certs: true
+            return_content: false
+          register: fitness_public_health
+          retries: "{{ fitness_public_retries }}"
+          delay: 5
+          until: fitness_public_health.status | default(0) == 200
+
+        - name: Check public Pocket ID discovery after the edge reload
+          ansible.builtin.uri:
+            url: https://{{ fitness_auth_domain }}/.well-known/openid-configuration
+            status_code: 200
+            validate_certs: true
+            return_content: false
+          register: pocketid_discovery
+          retries: "{{ fitness_public_retries }}"
+          delay: 5
+          until: pocketid_discovery.status | default(0) == 200
+
+        - name: Remove successful deployment staging files
+          become: true
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ fitness_compose_next }}"
+            - "{{ fitness_site_next }}"
+
+        - name: Print the operator handoff for Step 11
+          ansible.builtin.debug:
+            msg:
+              - "Complete Pocket ID setup at https://{{ fitness_auth_domain }}"
+              - "rsync -a data/neon_dump/ timdumol@aries.timdumol.com:/tmp/fitsync-neon-dump/"
+              - "ssh aries.timdumol.com 'sudo install -d -m 0750 -o root -g 65532 /opt/fitsync/neon_dump && sudo cp -a /tmp/fitsync-neon-dump/. /opt/fitsync/neon_dump/ && sudo chown -R root:65532 /opt/fitsync/neon_dump && sudo find /opt/fitsync/neon_dump -type d -exec chmod 0750 {} + && sudo find /opt/fitsync/neon_dump -type f -exec chmod 0640 {} +'"
+              - "POCKET_ID_API_KEY_FILE=.pocket-id-api-key ./scripts/sync-pocket-id-identities.sh"
+              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd identities list"
+              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd identities list-pending  # diagnostic fallback only"
+              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim --dry-run"
+              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim"
+              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim"
+
+      rescue:
+        - name: Restore the previous Compose file when one was promoted
+          become: true
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ fitness_compose_previous }}"
+            dest: "{{ fitness_compose_file }}"
+            owner: root
+            group: root
+            mode: '0644'
+          when:
+            - compose_promoted is defined
+            - compose_promoted.changed | default(false)
+            - previous_compose_exists
+          ignore_errors: true
+
+        - name: Remove a newly promoted Compose project on an initial failure
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fitness_compose_file }}"
+              - down
+              - --remove-orphans
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          when:
+            - compose_promoted is defined
+            - compose_promoted.changed | default(false)
+            - not previous_compose_exists
+          changed_when: true
+          ignore_errors: true
+
+        - name: Remove the initial failed deployment Compose file
+          become: true
+          ansible.builtin.file:
+            path: "{{ fitness_compose_file }}"
+            state: absent
+          when:
+            - compose_promoted is defined
+            - compose_promoted.changed | default(false)
+            - not previous_compose_exists
+          ignore_errors: true
+
+        - name: Restart the previous Fitnessd deployment after rollback
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fitness_compose_file }}"
+              - up
+              - --detach
+              - --no-build
+              - --remove-orphans
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          when:
+            - compose_promoted is defined
+            - compose_promoted.changed | default(false)
+            - previous_compose_exists
+          changed_when: true
+          ignore_errors: true
+
+        - name: Restore the previous Caddy site fragment
+          become: true
+          ansible.builtin.copy:
+            remote_src: true
+            src: "{{ fitness_site_previous }}"
+            dest: "{{ fitness_site_file }}"
+            owner: root
+            group: root
+            mode: '0644'
+          when:
+            - site_promoted is defined
+            - site_promoted.changed | default(false)
+            - previous_site_exists
+          ignore_errors: true
+
+        - name: Remove a newly promoted Caddy fragment on an initial failure
+          become: true
+          ansible.builtin.file:
+            path: "{{ fitness_site_file }}"
+            state: absent
+          when:
+            - site_promoted is defined
+            - site_promoted.changed | default(false)
+            - not previous_site_exists
+          ignore_errors: true
+
+        - name: Validate the restored combined Caddy configuration
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - validate
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: false
+          when: site_promoted is defined and site_promoted.changed | default(false)
+          ignore_errors: true
+
+        - name: Reload the restored combined Caddy configuration
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ caddy_container.stdout | trim }}"
+              - caddy
+              - reload
+              - --config
+              - /etc/caddy/Caddyfile
+              - --adapter
+              - caddyfile
+          changed_when: true
+          when: site_promoted is defined and site_promoted.changed | default(false)
+          ignore_errors: true
+
+        - name: Remove failed deployment staging files
+          become: true
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ fitness_compose_next }}"
+            - "{{ fitness_site_next }}"
+          ignore_errors: true
+
+        - name: Fail the deployment after restoring the previous release
+          ansible.builtin.fail:
+            msg: >-
+              Fitnessd deployment validation failed. The previous Compose and
+              Caddy configuration were restored where available.

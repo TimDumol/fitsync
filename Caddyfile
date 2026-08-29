@@ -1,0 +1,25 @@
+auth.aries.timdumol.com {
+	reverse_proxy pocketid:1411
+}
+
+api.aries.timdumol.com {
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy fitnessd:3000
+	}
+	handle /mcp {
+		reverse_proxy fitnessd:3000 {
+			flush_interval -1
+		}
+	}
+	handle /api/* {
+		reverse_proxy fitnessd:3000
+	}
+	handle /healthz {
+		reverse_proxy fitnessd:3000
+	}
+	respond 404
+}
+
+mars.timdumol.com {
+	reverse_proxy host.docker.internal:8080
+}

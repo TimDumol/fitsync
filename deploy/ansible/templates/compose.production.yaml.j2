@@ -1,0 +1,90 @@
+name: fitsync
+
+services:
+  pocketid:
+    image: {{ fitness_pocketid_image }}
+    restart: unless-stopped
+    expose:
+      - "1411"
+    volumes:
+      - {{ pocketid_data_dir }}:/app/data
+    environment:
+      APP_URL: https://{{ fitness_auth_domain }}
+      ENCRYPTION_KEY_FILE: /run/secrets/pocketid_encryption_key
+      ALLOW_INSECURE_CALLBACK_URLS: "false"
+      TRUST_PROXY: "true"
+      PUID: "{{ pocketid_uid }}"
+      PGID: "{{ pocketid_gid }}"
+    secrets:
+      - pocketid_encryption_key
+    healthcheck:
+      test: ["CMD", "/app/pocket-id", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      default: {}
+      caddy-edge:
+        aliases:
+          - fitsync-pocketid
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  fitnessd:
+    build:
+      context: {{ fitness_app_dir }}
+    restart: unless-stopped
+    command: ["serve"]
+    expose:
+      - "3000"
+    volumes:
+      - {{ fitnessd_data_dir }}:/data
+      - {{ fitness_archive_dir }}:/var/lib/fitnessd/archives
+      - {{ fitness_neon_dump_dir }}:/import/neon_dump:ro
+    environment:
+      DB_PATH: /data/fitness.db
+      ARCHIVE_DIR: /var/lib/fitnessd/archives
+      FITNESSD_ADDR: ":3000"
+      POCKETID_ISSUER: {{ fitness_issuer }}
+      MCP_RESOURCE: {{ fitness_resource }}
+      TRUST_PROXY: "true"
+      FITNESS_INGEST_TIM_TOKEN_FILE: /run/secrets/fitness_ingest_tim_token
+      FITNESS_INGEST_JOPI_TOKEN_FILE: /run/secrets/fitness_ingest_jopi_token
+    secrets:
+      - fitness_ingest_tim_token
+      - fitness_ingest_jopi_token
+    healthcheck:
+      test: ["CMD", "fitnessd", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      default: {}
+      caddy-edge:
+        aliases:
+          - fitsync-fitnessd
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+secrets:
+  pocketid_encryption_key:
+    file: {{ fitness_secret_dir }}/pocketid_encryption_key
+  fitness_ingest_tim_token:
+    file: {{ fitness_secret_dir }}/fitness_ingest_tim_token
+  fitness_ingest_jopi_token:
+    file: {{ fitness_secret_dir }}/fitness_ingest_jopi_token
+
+networks:
+  # Compose creates this private project network; it is not shared with Caddy.
+  default: {}
+  caddy-edge:
+    external: true
+    name: caddy-edge

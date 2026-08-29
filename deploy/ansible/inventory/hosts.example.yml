@@ -1,0 +1,8 @@
+all:
+  children:
+    aries:
+      hosts:
+        aries.timdumol.com:
+          ansible_host: aries.timdumol.com
+          # This account must have passwordless SSH and passwordless sudo.
+          ansible_user: timdumol

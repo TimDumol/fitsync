@@ -1,0 +1,23 @@
+# This fragment is owned by Fitnessd. The Aprendiendo Caddyfile imports all
+# files in sites-enabled and retains ownership of mars.timdumol.com.
+{{ fitness_auth_domain }} {
+	reverse_proxy fitsync-pocketid:1411
+}
+
+{{ fitness_api_domain }} {
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy fitsync-fitnessd:3000
+	}
+	handle /mcp {
+		reverse_proxy fitsync-fitnessd:3000 {
+			flush_interval -1
+		}
+	}
+	handle /api/* {
+		reverse_proxy fitsync-fitnessd:3000
+	}
+	handle /healthz {
+		reverse_proxy fitsync-fitnessd:3000
+	}
+	respond 404
+}

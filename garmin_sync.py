@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import time
 import sys
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from garminconnect import (
     Garmin,
@@ -237,6 +242,17 @@ def _write_json_value(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def _write_raw_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_canonical_json_bytes(value))
+
+
 def _write_activity_csv(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -342,6 +358,12 @@ def sync_activities(
     payloads = api.get_activities_by_date(start.isoformat(), end.isoformat(), sortorder="asc")
     fetched = [summarize_activity(payload) for payload in payloads]
 
+    raw_dir = output_dir / "raw" / "activities"
+    for payload in payloads:
+        activity_id = payload.get("activityId") if isinstance(payload, dict) else None
+        if activity_id is not None:
+            _write_raw_json(raw_dir / f"{activity_id}.json", payload)
+
     json_path = output_dir / "activities.json"
     existing = _load_json_list(json_path)
     # The requested range is authoritative: replacing it also removes activities
@@ -378,7 +400,7 @@ def sync_activities(
 
 
 def sync_activity_details(
-    api: Garmin, activities: list[dict[str, Any]], output_dir: Path
+    api: Garmin, activities: list[dict[str, Any]], output_dir: Path, raw_dir: Path | None = None
 ) -> int:
     details_dir = output_dir / "activity_details"
     details_dir.mkdir(parents=True, exist_ok=True)
@@ -407,13 +429,15 @@ def sync_activity_details(
                 lambda: api.get_activity_power_in_timezones(str(activity_id))
             ),
             "metric_time_series": _optional_api(
-                lambda: api.get_activity_details(str(activity_id), maxchart=2000, maxpoly=0)
+                lambda: api.get_activity_details(str(activity_id), maxchart=2000, maxpoly=2000)
             ),
         }
         if "strength" in activity_type:
             details["exercise_sets"] = _optional_api(
                 lambda: api.get_activity_exercise_sets(str(activity_id))
             )
+        if raw_dir is not None:
+            _write_raw_json(raw_dir / f"{activity_id}.json", details)
         _write_json_value(target, _without_activity_location(details))
         written += 1
     return written
@@ -512,6 +536,17 @@ def sync_daily_recovery(api: Garmin, start: date, end: date, output_dir: Path) -
         heart_rate = _optional_api(lambda d=day_text: api.get_heart_rates(d), {})
         intensity = _optional_api(lambda d=day_text: api.get_intensity_minutes_data(d), {})
         events = _optional_api(lambda d=day_text: api.get_body_battery_events(d), [])
+        _write_raw_json(
+            output_dir / "raw" / "daily_recovery" / f"{day_text}.json",
+            {
+                "summary": summary or {},
+                "stress": stress or {},
+                "heart_rate": heart_rate or {},
+                "intensity": intensity or {},
+                "body_battery": body_battery_by_date.get(day_text, {}),
+                "events": events or [],
+            },
+        )
         fetched.append(
             summarize_daily_recovery(
                 day_text,
@@ -564,15 +599,19 @@ def sync_training_and_body(api: Garmin, end: date, output_dir: Path) -> None:
             lambda: api.get_blood_pressure(body_start, day_text), {}
         ),
     }
+    _write_raw_json(output_dir / "raw" / "training_snapshot" / f"{day_text}.json", training)
+    _write_raw_json(output_dir / "raw" / "body_measurements" / f"{day_text}.json", body)
     _write_json_value(output_dir / "training_snapshot.json", training)
     _write_json_value(output_dir / "body_measurements.json", body)
 
 
-def sync_sleep(api: Garmin, start: date, end: date, output_dir: Path) -> int:
+def sync_sleep(
+    api: Garmin, start: date, end: date, output_dir: Path, raw_dir: Path | None = None
+) -> int:
     sleep_path = output_dir / "sleep.json"
     existing = _load_json_list(sleep_path)
     fetched = [
-        fetch_day(api, start + timedelta(days=offset), raw_dir=None)
+        fetch_day(api, start + timedelta(days=offset), raw_dir=raw_dir)
         for offset in range((end - start).days + 1)
     ]
     fetched_dates = {record.get("date") for record in fetched}
@@ -582,6 +621,138 @@ def sync_sleep(api: Garmin, start: date, end: date, output_dir: Path) -> int:
     sleep_fields = tuple(dict.fromkeys(key for record in merged for key in record.keys()))
     _write_csv(output_dir / "sleep.csv", merged, sleep_fields)
     return len(fetched)
+
+
+def _raw_ingest_records(output_dir: Path) -> list[dict[str, Any]]:
+    specs = (
+        ("sleep", "sleep"),
+        ("activities", "activities"),
+        ("activity_details", "activity_details"),
+        ("daily_recovery", "daily_recovery"),
+        ("body_battery_events", "daily_recovery"),
+        ("training_snapshot", "training_snapshot"),
+        ("body_measurements", "body_measurements"),
+    )
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    activity_dates: dict[str, str] = {}
+    for dataset, directory in specs:
+        for path in sorted((output_dir / "raw" / directory).glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            key = path.stem
+            if dataset == "activities":
+                key = str(payload.get("activityId") or key)
+                record_date = str(payload.get("startTimeLocal") or "")[:10]
+                if record_date:
+                    activity_dates[key] = record_date
+            elif dataset == "activity_details":
+                key = str(payload.get("activity_id") or key)
+                record_date = activity_dates.get(key, "")
+            else:
+                record_date = key
+            if (dataset, key) in seen:
+                continue
+            seen.add((dataset, key))
+            record = {
+                "dataset": dataset,
+                "record_key": key,
+                "record_date": record_date or None,
+                "payload_raw": payload,
+            }
+            records.append(record)
+    return records
+
+
+def _multipart_body(output_dir: Path) -> tuple[bytes, str]:
+    boundary = "----fitsync-" + uuid.uuid4().hex
+    records = _raw_ingest_records(output_dir)
+    archives: list[dict[str, str]] = []
+    file_parts: list[tuple[str, Path]] = []
+    for path in sorted((output_dir / "activity_originals").glob("*.zip")):
+        upload_id = uuid.uuid4().hex
+        archives.append(
+            {
+                "upload_id": upload_id,
+                "original_filename": path.name,
+                "content_type": "application/zip",
+                "activity_record_key": path.stem,
+            }
+        )
+        file_parts.append((upload_id, path))
+
+    parts: list[bytes] = []
+    metadata = _canonical_json_bytes({"records": records, "archives": archives})
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            "Content-Disposition: form-data; name=\"records\"\r\n"
+            "Content-Type: application/json\r\n\r\n"
+        ).encode()
+        + metadata
+        + b"\r\n"
+    )
+    for upload_id, path in file_parts:
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"archive_{upload_id}\"; filename=\"{path.name}\"\r\n"
+                "Content-Type: application/zip\r\n\r\n"
+            ).encode()
+            + path.read_bytes()
+            + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def upload_raw_to_fitnessd(
+    output_dir: Path,
+    environ: dict[str, str] | None = None,
+    *,
+    urlopen_fn: Any = urlopen,
+    sleep_fn: Any = time.sleep,
+) -> dict[str, Any]:
+    env = environ if environ is not None else os.environ
+    base_url = env.get("FITNESS_API_URL")
+    token = env.get("FITNESS_INGEST_TOKEN")
+    token_file = env.get("FITNESS_INGEST_TOKEN_FILE")
+    if token and token_file:
+        raise NeonSyncError("Set only one of FITNESS_INGEST_TOKEN and FITNESS_INGEST_TOKEN_FILE")
+    if not token and token_file:
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise NeonSyncError("Could not read FITNESS_INGEST_TOKEN_FILE") from exc
+    if not base_url or not token:
+        raise NeonSyncError("Set FITNESS_API_URL and FITNESS_INGEST_TOKEN for fitnessd upload")
+    body, content_type = _multipart_body(output_dir)
+    request = Request(
+        base_url.rstrip("/") + "/api/v1/ingest/garmin/batch",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        },
+    )
+    last_error: Exception | None = None
+    for attempt in range(4):
+        try:
+            with urlopen_fn(request, timeout=30) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if not isinstance(result, dict):
+                raise NeonSyncError("fitnessd returned invalid JSON")
+            return result
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504}:
+                raise NeonSyncError(f"fitnessd upload returned HTTP {exc.code}") from exc
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            last_error = exc
+        if attempt < 3:
+            sleep_fn(min(8.0, 2.0**attempt))
+    raise NeonSyncError("fitnessd upload failed after retries") from last_error
 
 
 def parse_args() -> argparse.Namespace:
@@ -628,6 +799,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Upload existing curated exports to Neon without contacting Garmin.",
     )
+    parser.add_argument(
+        "--fitnessd",
+        action="store_true",
+        help="Upload cached raw Garmin responses to fitnessd using FITNESS_API_URL and FITNESS_INGEST_TOKEN.",
+    )
     return parser.parse_args()
 
 
@@ -672,10 +848,14 @@ def main() -> int:
                 f"originals downloaded: {download_count}"
             )
         if not args.activities_only:
-            sleep_count = sync_sleep(api, start, args.end_date, args.output_dir)
+            sleep_count = sync_sleep(
+                api, start, args.end_date, args.output_dir, args.output_dir / "raw" / "sleep"
+            )
             print(f"Sleep: synced {sleep_count} day(s)")
         if args.extended:
-            detail_count = sync_activity_details(api, fetched_activities, args.output_dir)
+            detail_count = sync_activity_details(
+                api, fetched_activities, args.output_dir, args.output_dir / "raw" / "activity_details"
+            )
             recovery_count = 0
             if not args.activities_only:
                 recovery_count = sync_daily_recovery(api, start, args.end_date, args.output_dir)
@@ -686,6 +866,12 @@ def main() -> int:
             print(extended_message + "; training/body snapshots updated")
         if args.neon:
             _print_neon_result(sync_garmin_directory_to_neon(args.output_dir))
+        if args.fitnessd:
+            result = upload_raw_to_fitnessd(args.output_dir)
+            print(
+                f"fitnessd: uploaded {result.get('records', 0)} raw record(s) and "
+                f"{result.get('archives', 0)} archive(s)"
+            )
         print(f"Output: {args.output_dir.resolve()}")
         return 0
     except GarminConnectAuthenticationError as exc:

@@ -1,5 +1,109 @@
 # Garmin sleep probe
 
+## Self-hosted Fitnessd service
+
+The Go service is built with `./scripts/build.sh` and tested with
+`./scripts/test.sh`. The production-shaped Compose configuration publishes
+only Caddy; Fitnessd and Pocket ID are reachable through the Compose network.
+Create the three files referenced by `docker-compose.yml` under `secrets/`
+outside version control before starting Compose. Keep the bind-mounted data
+directories owned by the corresponding container users.
+
+Fitnessd fetches OIDC discovery from `POCKETID_ISSUER` at startup and uses the
+advertised `jwks_uri`. The official provisioning flow queries Pocket ID's admin
+API with the local `.pocket-id-api-key`, then binds the returned immutable
+subjects to the two known athletes:
+
+```bash
+./scripts/sync-pocket-id-identities.sh
+```
+
+The script requires exactly one Pocket ID user named `tim` and one named
+`jopi`, verifies each returned subject is a UUID, and invokes Fitnessd's local
+transactional bind command. The API key is read over direct HTTPS and is never
+copied to the server. Verify the result with `fitnessd identities list`.
+
+Pending identities remain a defensive fallback for an unexpected or newly
+created subject. They can be inspected with `fitnessd identities list-pending`,
+but `identities approve` is not part of normal provisioning.
+
+The approved `(issuer, sub)` binding is authoritative; usernames are display
+metadata only. Deployment and initial Pocket ID user provisioning are manual
+operations and are not performed by the repository test/build scripts.
+
+## Production deployment
+
+Production runs Fitnessd and Pocket ID under `/opt/fitsync` on
+`aries.timdumol.com`. The existing Aprendiendo deployment at
+`/opt/aprendiendo-mcp/app` remains the only Caddy edge proxy; deploy its
+coordinated Caddy/network change first. That change creates the external
+`caddy-edge` network and imports `/opt/caddy/sites-enabled/*`.
+
+The controller needs Ansible, an SSH client, and the target's Docker Compose
+plugin. Copy `deploy/ansible/inventory/hosts.example.yml` to
+`deploy/ansible/inventory/hosts.yml`, adjust the passwordless-SSH deployment
+user if needed, and optionally create an Ansible-Vault-encrypted
+`deploy/ansible/group_vars/aries/secrets.yml`. Empty or missing secret values
+are generated on the server only when their `0400` files do not already exist.
+
+Run the guarded deployment with:
+
+```bash
+./scripts/deploy.sh --ask-vault-pass
+```
+
+Use `./scripts/deploy.sh --check --diff` for a check-mode preview. The entrypoint
+refuses to invoke Ansible unless `./scripts/test.sh` and `./scripts/build.sh`
+both pass. It uploads only the files needed for the Fitnessd image; it never
+uploads Git metadata, local databases, Garmin data, editor files, caches, or
+plaintext secrets. The Neon import directory is created empty and read-only;
+place an operator-reviewed snapshot there separately before Step 11.
+
+The deployment starts Pocket ID and waits for public OIDC discovery before
+starting Fitnessd, because Fitnessd fetches that discovery document during
+startup.
+
+## Pocket ID and ChatGPT MCP OAuth
+
+The deployed Pocket ID `v2.12.0` does not advertise an OAuth dynamic client
+registration endpoint (`registration_endpoint`) or client metadata documents.
+Create the OAuth client manually in Pocket ID; there is no Registration URL to
+enter in ChatGPT.
+
+The production API resource is configured as follows:
+
+```text
+Name:             Fitness MCP
+Resource:         https://api.aries.timdumol.com/mcp
+Permissions:      fitness:read, fitness:write
+Client access:    ChatGPT MCP, user-delegated permissions
+```
+
+To reproduce this in Pocket ID, open `Settings > APIs`, add the resource and
+both permission keys, then open the `ChatGPT MCP` client and grant it
+user-delegated access to those permissions. Keep machine-to-machine client
+permissions empty. An administrative API key can perform the same operation
+through `/api/apis`, `/api/apis/{id}/permissions`, and
+`/api/api-access/{client-id}`; keep that key outside Git and never put it in
+the OAuth or MCP configuration.
+
+For a manually configured ChatGPT MCP connection, use:
+
+```text
+MCP server:       https://api.aries.timdumol.com/mcp
+Authorization:    https://auth.aries.timdumol.com/authorize
+Token:            https://auth.aries.timdumol.com/api/oidc/token
+Registration:     leave blank; use the manually created client ID and secret
+Scopes:           openid email offline_access fitness:read fitness:write
+PKCE:             enabled
+```
+
+The OAuth client's redirect URI must exactly match the callback URL shown by
+ChatGPT. Run `./scripts/sync-pocket-id-identities.sh` before connecting
+ChatGPT. Once the two subjects are bound, no pending auth request or approval
+step is needed. The `profile` scope is optional for this pre-provisioned flow;
+it is only useful if the defensive unknown-identity fallback is exercised.
+
 This is a small, read-only trial of the unofficial `python-garminconnect`
 client. It fetches Garmin sleep, HRV, and resting-heart-rate data and prints a
 compact JSON summary suitable for later loading into a sheet or database.

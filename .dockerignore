@@ -1,0 +1,15 @@
+.git
+.private
+.neon-connect-string
+data/
+secrets/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+__pycache__/
+*.pyc
+.venv/
+.venv-wsl/

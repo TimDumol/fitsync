@@ -1,0 +1,238 @@
+openapi: 3.0.3
+info:
+  title: Fitnessd API
+  version: 1.0.0
+  description: |
+    Household fitness storage and mobile synchronization API.
+    The mobile sync timestamp cursor assumes one mobile device per athlete and
+    negligible concurrent workout writes; replace it with a sequence cursor if
+    those assumptions change. Garmin ingestion uses separate tables.
+servers:
+  - url: https://api.aries.timdumol.com
+paths:
+  /api/v1/athletes/{id}/health/daily:
+    get:
+      operationId: getDailyHealth
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Daily Garmin health records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /api/v1/athletes/{id}/activities:
+    get:
+      operationId: getActivities
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Activity records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /api/v1/sync/pull:
+    get:
+      operationId: pullSync
+      security: [{BearerAuth: []}]
+      parameters:
+        - name: since
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        '200':
+          description: Sync changes and the next high-water mark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncPullResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/sync/push:
+    post:
+      operationId: pushSync
+      security: [{BearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncPushRequest'
+      responses:
+        '200':
+          description: Stored winner for every submitted mutation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncPushResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: OAuth2 access token
+  parameters:
+    AthleteID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FromDate:
+      name: from
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    ToDate:
+      name: to
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, maxLength: 256 }
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Not authorized for this household.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooLarge:
+      description: Request exceeds configured bounds.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: Mutation cannot be applied.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    HealthRecord:
+      type: object
+      required: [id, dataset, record_key, record_date, payload, ingested_at]
+      properties:
+        id: { type: string }
+        dataset: { type: string }
+        record_key: { type: string }
+        record_date: { type: string, format: date }
+        payload: {}
+        ingested_at: { type: integer, format: int64 }
+    HealthPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/HealthRecord' }
+        next_cursor: { type: string }
+    ActivityPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/HealthRecord' }
+        next_cursor: { type: string }
+    SyncMutation:
+      type: object
+      required: [kind, id, athlete_id, client_updated_at, deleted]
+      properties:
+        kind: { type: string, enum: [session, entry, document] }
+        id: { type: string }
+        athlete_id: { type: string, format: uuid }
+        client_updated_at: { type: integer, format: int64, minimum: 0 }
+        deleted: { type: boolean }
+        workout_date: { type: string, format: date }
+        title: { type: string, maxLength: 512 }
+        source: { type: string, maxLength: 128 }
+        source_ref: { type: string, maxLength: 512 }
+        sequence_no: { type: integer, minimum: 1 }
+        entry_type: { type: string, maxLength: 128 }
+        session_id: { type: string }
+        document_key: { type: string, maxLength: 512 }
+        payload: {}
+    SyncPushRequest:
+      type: object
+      additionalProperties: false
+      required: [mutations]
+      properties:
+        mutations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SyncMutation' }
+    SyncChange:
+      allOf:
+        - $ref: '#/components/schemas/SyncMutation'
+        - type: object
+          required: [kind, server_synced_at]
+          properties:
+            kind: { type: string, enum: [session, entry, document] }
+            server_synced_at: { type: integer, format: int64 }
+    SyncPullResponse:
+      type: object
+      required: [next_since, changes]
+      properties:
+        next_since: { type: integer, format: int64 }
+        changes:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SyncChange' }
+    SyncPushResponse:
+      type: object
+      required: [winners]
+      properties:
+        winners:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SyncChange' }

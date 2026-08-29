@@ -1,0 +1,41 @@
+---
+# The existing Aprendiendo deployment owns the host edge proxy. Fitnessd
+# joins its private Compose network and the shared caddy-edge network.
+fitness_deploy_root: /opt/fitsync
+fitness_app_dir: "{{ fitness_deploy_root }}/app"
+fitness_data_dir: "{{ fitness_deploy_root }}/data"
+fitnessd_data_dir: "{{ fitness_data_dir }}/fitnessd"
+pocketid_data_dir: "{{ fitness_data_dir }}/pocketid"
+fitness_archive_dir: "{{ fitness_deploy_root }}/archives"
+fitness_neon_dump_dir: "{{ fitness_deploy_root }}/neon_dump"
+fitness_secret_dir: "{{ fitness_deploy_root }}/secrets"
+fitness_rollback_dir: "{{ fitness_deploy_root }}/rollback"
+
+fitness_compose_file: "{{ fitness_app_dir }}/compose.production.yaml"
+fitness_compose_next: "{{ fitness_app_dir }}/compose.production.yaml.next"
+fitness_compose_previous: "{{ fitness_rollback_dir }}/compose.production.yaml"
+fitness_site_file: /opt/caddy/sites-enabled/fitsync.caddy
+fitness_site_next: "{{ fitness_rollback_dir }}/fitsync.caddy.next"
+fitness_site_previous: "{{ fitness_rollback_dir }}/fitsync.caddy"
+
+# Fitnessd fixes its UID in the image. Pocket ID exposes PUID/PGID; pin them
+# here so ownership is deterministic and survives a change of SSH user.
+fitnessd_uid: "65532"
+fitnessd_gid: "65532"
+pocketid_uid: "1000"
+pocketid_gid: "1000"
+
+# Exact release tags are deliberately used instead of floating major tags.
+# An operator may override this with the digest of the tested release.
+fitness_pocketid_image: ghcr.io/pocket-id/pocket-id:v2.12.0
+fitness_issuer: https://auth.aries.timdumol.com
+fitness_resource: https://api.aries.timdumol.com/mcp
+fitness_auth_domain: auth.aries.timdumol.com
+fitness_api_domain: api.aries.timdumol.com
+
+aprendiendo_app_dir: /opt/aprendiendo-mcp/app
+aprendiendo_compose_file: "{{ aprendiendo_app_dir }}/compose.production.yaml"
+aprendiendo_caddy_sites_dir: /opt/caddy/sites-enabled
+
+fitness_health_retries: 30
+fitness_public_retries: 12

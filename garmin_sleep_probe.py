@@ -148,8 +148,13 @@ def fetch_day(api: Garmin, day: date, raw_dir: Path | None) -> dict[str, Any]:
         raw_file = raw_dir / f"{day_text}.json"
         raw_file.write_text(
             json.dumps(
-                {"sleep": sleep_payload, "hrv": hrv_payload, "resting_heart_rate": rhr_payload},
-                indent=2,
+                {
+                    "sleep": sleep_payload or {},
+                    "hrv": hrv_payload or {},
+                    "resting_heart_rate": rhr_payload or {},
+                },
+                sort_keys=True,
+                separators=(",", ":"),
                 ensure_ascii=False,
             ),
             encoding="utf-8",
