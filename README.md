@@ -309,10 +309,12 @@ without contacting Garmin, use `-ExistingOnly`.
 Register the daily Windows task after the manual run succeeds:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_fitnessd_sync_task.ps1 -At "06:30" -Days 3
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_fitnessd_sync_task.ps1
 ```
 
-The task must run as the same Windows user that configured the Fitnessd and
+By default, this runs at 09:00 and 11:00 and syncs the preceding day. Override
+the schedule with, for example, `-At "08:00","20:00" -Days 3`. The task must
+run as the same Windows user that configured the Fitnessd and
 Garmin tokens, because the stored Fitnessd token is protected with Windows
 DPAPI. Its log is `.private\logs\fitnessd-sync.log`. Garmin can still require
 an interactive MFA refresh occasionally; run the sync manually if the task

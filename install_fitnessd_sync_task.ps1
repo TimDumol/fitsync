@@ -1,9 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern("^([01]\d|2[0-3]):[0-5]\d$")]
-    [string]$At = "06:30",
+    [string[]]$At = @("09:00", "11:00"),
     [ValidateRange(1, 30)]
-    [int]$Days = 3,
+    [int]$Days = 1,
     [string]$TaskName = "Garmin Fitnessd Sync",
     [switch]$DownloadOriginals,
     [string]$ApiUrl = "https://api.aries.timdumol.com"
@@ -24,7 +24,11 @@ if ($DownloadOriginals) {
     $arguments += " -DownloadOriginals"
 }
 $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments -WorkingDirectory $projectRoot
-$trigger = New-ScheduledTaskTrigger -Daily -At $At
+$triggers = @(
+    foreach ($time in $At) {
+        New-ScheduledTaskTrigger -Daily -At $time
+    }
+)
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -AllowStartIfOnBatteries `
@@ -34,10 +38,10 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger $triggers `
     -Settings $settings `
     -Description "Sync raw Garmin fitness data to the Fitnessd SQLite server." `
     -Force | Out-Null
 
-Write-Host "Scheduled '$TaskName' daily at $At for the current Windows user."
+Write-Host "Scheduled '$TaskName' daily at $($At -join ', ') for the current Windows user."
 Write-Host "The task runs when that user is logged in and starts later if the computer was asleep."
