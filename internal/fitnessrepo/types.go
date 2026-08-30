@@ -159,6 +159,7 @@ type WorkoutWrite struct {
 type WorkoutWinner struct {
 	Workout             StrengthWorkout `json:"workout"`
 	Created             bool            `json:"created"`
+	Deleted             bool            `json:"deleted"`
 	SubmittedVersionWon bool            `json:"submitted_version_won"`
 	ServerSyncedAt      int64           `json:"server_synced_at"`
 }

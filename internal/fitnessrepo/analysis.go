@@ -24,50 +24,107 @@ func (r *Repository) TrainingContext(ctx context.Context, athleteID, asOf string
 	if lookback < 7 || lookback > 90 {
 		return TrainingContext{}, errors.New("invalid_input: lookback_days must be between 7 and 90")
 	}
+	allSections := allContextSections(include)
+	wants := func(section string) bool { return allSections || hasString(include, section) }
+	wantRecovery := wants("recovery")
+	wantLoad := wants("training_load")
+	wantActivities := wants("recent_activities")
+	wantStrength := wants("strength")
+	wantPlan := wants("plan")
+	wantCheckins := wants("checkins")
+	wantGoals := wants("goals")
 	timezone, err := r.AthleteTimezone(ctx, athleteID)
 	if err != nil {
 		return TrainingContext{}, err
 	}
 	start := dateShift(asOf, -lookback)
-	health, err := r.DailyHealth(ctx, athleteID, HealthQuery{From: start, To: asOf, Metrics: []string{"sleep", "hrv", "heart_rate", "stress", "body_battery"}, Order: "desc", Limit: 100})
-	if err != nil {
-		return TrainingContext{}, err
+
+	health := Page[DailyHealthItem]{}
+	if wantRecovery {
+		healthFrom := dateShift(asOf, -maxInt(lookback, 28))
+		health, err = r.DailyHealth(ctx, athleteID, HealthQuery{From: healthFrom, To: asOf, Metrics: []string{"sleep", "hrv", "heart_rate", "stress", "body_battery"}, Order: "desc", Limit: 100})
+		if err != nil {
+			return TrainingContext{}, err
+		}
 	}
-	activities, err := r.Activities(ctx, athleteID, ActivityQuery{From: start, To: asOf, Detail: "compact", Order: "desc", Limit: 100})
-	if err != nil {
-		return TrainingContext{}, err
+
+	activities := Page[fitnessdata.ActivitySummary]{}
+	if wantLoad || wantActivities {
+		activityFrom := start
+		if wantLoad {
+			activityFrom = dateShift(asOf, -maxInt(lookback, 28))
+		}
+		activities, err = r.Activities(ctx, athleteID, ActivityQuery{From: activityFrom, To: asOf, Detail: "compact", Order: "desc", Limit: 100})
+		if err != nil {
+			return TrainingContext{}, err
+		}
 	}
-	profile, err := r.Profile(ctx, athleteID)
-	if err != nil {
-		return TrainingContext{}, err
+
+	var profile Profile
+	if wantGoals {
+		profile, err = r.Profile(ctx, athleteID)
+		if err != nil {
+			return TrainingContext{}, err
+		}
 	}
-	plan, err := r.Plan(ctx, athleteID, dateShift(asOf, -1), dateShift(asOf, 7), true)
-	if err != nil {
-		return TrainingContext{}, err
+
+	var plan PlanResult
+	if wantPlan {
+		plan, err = r.Plan(ctx, athleteID, dateShift(asOf, -1), dateShift(asOf, 7), true)
+		if err != nil {
+			return TrainingContext{}, err
+		}
 	}
-	latest := latestCheckin(ctx, r.db, athleteID, asOf)
-	context := TrainingContext{AthleteID: athleteID, AsOf: asOf, Timezone: timezone, GeneratedAt: r.clock().UTC().Format(time.RFC3339), DataStatus: health.DataStatus, Profile: &profile, PlannedSessions: plan.Sessions, LatestCheckin: latest, RecentActivities: activities.Items, Flags: []string{}}
-	context.NearestTargetEvent = nearestEvent(profile.TargetEvents, asOf)
-	context.CurrentStatus.Recovery = classifyRecovery(health.Items, latest, asOf)
-	context.CurrentStatus.TrainingLoad = calculateLoad(activities.Items, asOf, health.Items)
-	context.RecentTraining.Runs = aggregateActivities(activities.Items, "running")
-	strength := aggregateStrengthForContext(ctx, r, athleteID, start, asOf)
-	context.RecentTraining.Strength = strength
-	if latest == nil {
+
+	var latest *Checkin
+	if wantRecovery || wantCheckins {
+		latest = latestCheckin(ctx, r.db, athleteID, asOf)
+	}
+	recentActivities := activitiesInRange(activities.Items, start, asOf)
+	context := TrainingContext{AthleteID: athleteID, AsOf: asOf, Timezone: timezone, GeneratedAt: r.clock().UTC().Format(time.RFC3339), DataStatus: health.DataStatus, Flags: []string{}}
+	if wantGoals {
+		goalsProfile := profile
+		if !allSections {
+			goalsProfile = contextGoalsProfile(profile)
+		}
+		context.Profile = &goalsProfile
+		context.NearestTargetEvent = nearestEvent(profile.TargetEvents, asOf)
+	}
+	if wantRecovery {
+		context.CurrentStatus.Recovery = classifyRecovery(health.Items, latest, asOf)
+	}
+	if wantLoad {
+		loadActivities := activitiesInRange(activities.Items, dateShift(asOf, -28), asOf)
+		context.CurrentStatus.TrainingLoad = calculateLoad(loadActivities, asOf, health.Items)
+	}
+	if wantActivities {
+		context.RecentActivities = limitActivities(recentActivities, 10)
+		context.RecentTraining.Runs = aggregateActivities(recentActivities, "running")
+	}
+	if wantStrength {
+		context.RecentTraining.Strength = aggregateStrengthForContext(ctx, r, athleteID, start, asOf)
+	}
+	if wantPlan {
+		context.PlannedSessions = plan.Sessions
+	}
+	if wantCheckins {
+		context.LatestCheckin = latest
+	}
+	if (wantRecovery || wantCheckins) && latest == nil {
 		context.Flags = append(context.Flags, "NO_CURRENT_CHECKIN")
 	}
-	if len(profile.ConditionsAndInjuries) == 0 {
+	if wantGoals && len(profile.ConditionsAndInjuries) == 0 {
 		context.Flags = append(context.Flags, "NO_CURRENT_INJURY_DATA")
 	}
-	if len(health.DataStatus.MissingDates) > 0 {
+	if wantRecovery && len(health.DataStatus.MissingDates) > 0 {
 		context.Flags = append(context.Flags, "INCOMPLETE_RECOVERY_DATA")
 	}
-	if health.DataStatus.LastSyncAt != nil {
+	if wantRecovery && health.DataStatus.LastSyncAt != nil {
 		if synced, parseErr := time.Parse(time.RFC3339, *health.DataStatus.LastSyncAt); parseErr == nil && r.clock().Sub(synced) > 48*time.Hour {
 			context.Flags = append(context.Flags, "STALE_SYNC")
 		}
 	}
-	if context.CurrentStatus.Recovery != nil {
+	if wantRecovery && context.CurrentStatus.Recovery != nil {
 		if context.CurrentStatus.Recovery.Classification == "low" {
 			context.Flags = append(context.Flags, "RECOVERY_LOW")
 		}
@@ -81,10 +138,10 @@ func (r *Repository) TrainingContext(ctx context.Context, athleteID, asOf string
 			context.Flags = append(context.Flags, "PAIN_REPORTED")
 		}
 	}
-	if context.CurrentStatus.TrainingLoad != nil && context.CurrentStatus.TrainingLoad.Classification == "elevated_vs_recent_range" {
+	if wantLoad && context.CurrentStatus.TrainingLoad != nil && context.CurrentStatus.TrainingLoad.Classification == "elevated_vs_recent_range" {
 		context.Flags = append(context.Flags, "LOAD_ELEVATED")
 	}
-	for _, s := range plan.Sessions {
+	for _, s := range context.PlannedSessions {
 		if s.Date == dateShift(asOf, 1) && (s.SessionType == "intervals" || s.SessionType == "tempo" || s.SessionType == "threshold" || s.SessionType == "race") {
 			context.Flags = append(context.Flags, "PLANNED_HARD_SESSION")
 		}
@@ -115,6 +172,56 @@ func aggregateStrengthForContext(ctx context.Context, r *Repository, athleteID, 
 		}
 	}
 	return agg
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func allContextSections(include []string) bool {
+	if len(include) == 0 {
+		return true
+	}
+	for _, section := range []string{"recovery", "training_load", "recent_activities", "strength", "plan", "checkins", "goals"} {
+		if !hasString(include, section) {
+			return false
+		}
+	}
+	return true
+}
+
+func activitiesInRange(items []fitnessdata.ActivitySummary, from, to string) []fitnessdata.ActivitySummary {
+	result := make([]fitnessdata.ActivitySummary, 0, len(items))
+	for _, item := range items {
+		if item.Date >= from && item.Date <= to {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func limitActivities(items []fitnessdata.ActivitySummary, limit int) []fitnessdata.ActivitySummary {
+	if len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func contextGoalsProfile(profile Profile) Profile {
+	profile.BirthYear = nil
+	profile.TargetEvents = nil
+	profile.WeeklyAvailability = nil
+	profile.Preferences = Preferences{}
+	profile.HeartRateZones = nil
+	profile.PaceZones = nil
+	profile.PowerZones = nil
+	profile.Constraints = nil
+	profile.ConditionsAndInjuries = nil
+	profile.SensitiveFieldsPresent = false
+	return profile
 }
 
 func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *RecoveryStatus {
@@ -398,16 +505,18 @@ func (r *Repository) TrainingAnalysis(ctx context.Context, athleteID string, q A
 		}
 	}
 	period.ActiveDays = len(activeDates)
-	strength, _ := r.StrengthWorkouts(ctx, athleteID, StrengthQuery{From: q.From, To: q.To, IncludeEntries: true, Order: "asc", Limit: 100})
-	for _, w := range strength.Items {
-		period.Strength.Sessions++
-		period.Strength.WorkingSets += w.Summary.WorkingSets
-		if w.Summary.VolumeLoadKG != nil {
-			addFloat(&period.Strength.VolumeLoadKG, *w.Summary.VolumeLoadKG)
-		}
-		for g, n := range w.Summary.MuscleGroupSets {
-			period.Strength.MuscleGroupSets = ensureMap(period.Strength.MuscleGroupSets)
-			period.Strength.MuscleGroupSets[g] += n
+	if len(q.Categories) == 0 || hasString(q.Categories, "strength") {
+		strength, _ := r.StrengthWorkouts(ctx, athleteID, StrengthQuery{From: q.From, To: q.To, IncludeEntries: true, Order: "asc", Limit: 100})
+		for _, w := range strength.Items {
+			period.Strength.Sessions++
+			period.Strength.WorkingSets += w.Summary.WorkingSets
+			if w.Summary.VolumeLoadKG != nil {
+				addFloat(&period.Strength.VolumeLoadKG, *w.Summary.VolumeLoadKG)
+			}
+			for g, n := range w.Summary.MuscleGroupSets {
+				period.Strength.MuscleGroupSets = ensureMap(period.Strength.MuscleGroupSets)
+				period.Strength.MuscleGroupSets[g] += n
+			}
 		}
 	}
 	health, _ := r.DailyHealth(ctx, athleteID, HealthQuery{From: q.From, To: q.To, Order: "asc", Limit: 100})

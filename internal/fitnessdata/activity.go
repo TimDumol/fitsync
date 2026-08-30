@@ -33,28 +33,48 @@ func DecodeActivity(_ string, payload json.RawMessage) (DecoderResult[ActivitySu
 		StartGMT:        text(object, "startTimeGMT", "start_time_gmt"),
 		Name:            text(object, "activityName", "activity_name", "name"),
 		SourceType:      stringValue(nested(object, "activityType.typeKey", "activityType.typeName", "activity_type", "activity_type_key", "type")),
-		ParentType:      text(object, "activityType.parentType.typeKey", "parent_type"),
+		ParentType:      text(object, "activityType.parentType.typeKey", "parent_type", "parent_activity_type"),
 		DistanceKM:      firstNumber(object, "distanceKm", "distance_km"),
 		DurationMinutes: durationMinutes(object, []string{"duration", "durationSeconds", "duration_seconds"}, []string{"duration_minutes"}),
 		MovingMinutes:   durationMinutes(object, []string{"movingDuration", "moving_duration_seconds"}, []string{"moving_minutes"}),
 		ElapsedMinutes:  durationMinutes(object, []string{"elapsedDuration", "elapsed_duration_seconds"}, []string{"elapsed_minutes"}),
-		AverageHR:       firstNumber(object, "averageHR", "average_hr"), MaxHR: firstNumber(object, "maxHR", "max_hr"),
+		PaceMinPerKM:    firstNumber(object, "averagePace", "pace_min_per_km", "average_pace_min_per_km"),
+		SpeedKPH:        firstNumber(object, "averageSpeedKPH", "average_speed_kmh", "average_speed_kph"),
+		ElevationGainM:  firstNumber(object, "elevationGain", "elevation_gain_m"),
+		ElevationLossM:  firstNumber(object, "elevationLoss", "elevation_loss_m"),
+		AverageHR:       firstNumber(object, "averageHR", "average_hr", "average_heart_rate"), MaxHR: firstNumber(object, "maxHR", "max_hr", "max_heart_rate"),
 		Calories:            firstNumber(object, "calories", "totalCalories"),
 		AerobicEffect:       firstNumber(object, "aerobicTrainingEffect", "aerobic_training_effect"),
 		AnaerobicEffect:     firstNumber(object, "anaerobicTrainingEffect", "anaerobic_training_effect"),
 		TrainingEffectLabel: text(object, "trainingEffectLabel", "training_effect_label"),
 		TrainingLoad:        firstNumber(object, "activityTrainingLoad", "activity_training_load", "training_load"),
 		VO2Max:              firstNumber(object, "vO2MaxValue", "vo2Max", "vo2_max"),
-		Cadence:             firstNumber(object, "averageRunningCadenceInStepsPerMinute", "average_cadence", "cadence"),
-		Power:               firstNumber(object, "averagePower", "average_power", "power"),
-		GradeAdjustedPace:   firstNumber(object, "avgGradeAdjustedPace", "grade_adjusted_pace"),
-		Respiration:         firstNumber(object, "averageRespirationRate", "respiration"),
-		Temperature:         firstNumber(object, "avgTemperature", "temperature"),
-		WaterLoss:           firstNumber(object, "waterEstimatedLossVolume", "water_loss"),
+		Cadence:             firstNumber(object, "averageRunningCadenceInStepsPerMinute", "average_cadence", "cadence", "average_running_cadence_spm"),
+		Power:               firstNumber(object, "averagePower", "average_power", "power", "average_power_w"),
+		GradeAdjustedPace:   firstNumber(object, "avgGradeAdjustedPace", "grade_adjusted_pace", "grade_adjusted_pace_min_per_km"),
+		Respiration:         firstNumber(object, "averageRespirationRate", "respiration", "average_respiration_rate"),
+		Temperature:         firstNumber(object, "avgTemperature", "temperature", "min_temperature_c", "max_temperature_c"),
+		WaterLoss:           firstNumber(object, "waterEstimatedLossVolume", "water_loss", "estimated_water_loss_ml"),
 		BodyBatteryChange:   firstNumber(object, "differenceBodyBattery", "body_battery_change"),
-		Steps:               firstNumber(object, "steps", "totalSteps"), IntensityMinutes: firstNumber(object, "vigorousIntensityMinutes", "intensity_minutes"),
-		Fastest1K: firstNumber(object, "fastest1Km", "fastest_1k"), FastestMile: firstNumber(object, "fastestMile", "fastest_mile"),
+		Steps:               firstNumber(object, "steps", "totalSteps"), IntensityMinutes: firstNumber(object, "vigorousIntensityMinutes", "intensity_minutes", "vigorous_intensity_minutes"),
+		Fastest1K: firstNumber(object, "fastest1Km", "fastest_1k", "fastest_1k_seconds"), FastestMile: firstNumber(object, "fastestMile", "fastest_mile", "fastest_mile_seconds"),
 		PerceivedEffort: firstNumber(object, "perceivedEffort", "perceived_effort"), Notes: text(object, "notes"),
+		PersonalRecord:  boolean(object, "isPR", "is_pr", "personal_record", "is_personal_record"),
+		Manufacturer:    text(object, "manufacturer"),
+		LinkedWorkoutID: text(object, "linkedWorkoutId", "linked_workout_id"),
+	}
+	if value := firstNumber(object, "lapCount", "lap_count"); value != nil {
+		lapCount := int(*value)
+		activity.LapCount = &lapCount
+	}
+	if activity.DistanceKM == nil {
+		if distanceMeters := firstNumber(object, "distance"); distanceMeters != nil {
+			*distanceMeters /= 1000
+			activity.DistanceKM = distanceMeters
+		}
+	}
+	if activity.SpeedKPH == nil {
+		activity.SpeedKPH = firstNumber(object, "averageSpeedKPH", "average_speed_kmh", "average_speed_kph")
 	}
 	if activity.DurationMinutes != nil && activity.DistanceKM != nil && *activity.DistanceKM > 0 {
 		pace := *activity.DurationMinutes / *activity.DistanceKM
@@ -64,6 +84,7 @@ func DecodeActivity(_ string, payload json.RawMessage) (DecoderResult[ActivitySu
 	}
 	activity.SourceType = strings.ToLower(activity.SourceType)
 	activity.Category = ActivityCategory(activity.SourceType)
+	activity.HRZoneMinutes = make([]*float64, 5)
 	for i := range activity.HRZoneMinutes {
 		zone := i + 1
 		activity.HRZoneMinutes[i] = firstNumber(object, fmt.Sprintf("hrZone%dMinutes", zone), fmt.Sprintf("hr_zone_%d_minutes", zone))

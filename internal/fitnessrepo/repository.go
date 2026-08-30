@@ -199,7 +199,14 @@ func (r *Repository) Activities(ctx context.Context, athleteID string, q Activit
 	if order != "asc" && order != "desc" {
 		return Page[fitnessdata.ActivitySummary]{}, errors.New("invalid_input: order must be asc or desc")
 	}
-	filters := filterHash(q.From, q.To, strings.Join(q.Categories, ",")+"|"+strings.Join(q.SourceTypes, ",")+"|"+q.Detail)
+	detail := q.Detail
+	if detail == "" {
+		detail = "summary"
+	}
+	if detail != "compact" && detail != "summary" && detail != "full" {
+		return Page[fitnessdata.ActivitySummary]{}, errors.New("invalid_input: detail must be compact, summary, or full")
+	}
+	filters := filterHash(q.From, q.To, strings.Join(q.Categories, ",")+"|"+strings.Join(q.SourceTypes, ",")+"|"+detail)
 	cur, err := decodeCursor(q.Cursor, order, filters)
 	if err != nil {
 		return Page[fitnessdata.ActivitySummary]{}, err
@@ -236,7 +243,7 @@ func (r *Repository) Activities(ctx context.Context, athleteID string, q Activit
 		if !containsOrEmpty(q.Categories, value.Value.Category) || !containsOrEmpty(q.SourceTypes, value.Value.SourceType) || (q.MinDurationMinutes != nil && (value.Value.DurationMinutes == nil || *value.Value.DurationMinutes < *q.MinDurationMinutes)) || (q.MinDistanceKM != nil && (value.Value.DistanceKM == nil || *value.Value.DistanceKM < *q.MinDistanceKM)) || (q.MinTrainingLoad != nil && (value.Value.TrainingLoad == nil || *value.Value.TrainingLoad < *q.MinTrainingLoad)) {
 			continue
 		}
-		items = append(items, value.Value)
+		items = append(items, projectActivitySummary(value.Value, detail))
 		if len(items) >= limit+1 {
 			break
 		}
@@ -281,7 +288,7 @@ func (r *Repository) Activity(ctx context.Context, athleteID, activityID string,
 		var detailRaw string
 		err := r.db.QueryRowContext(ctx, `SELECT payload_raw FROM garmin_records WHERE athlete_id=? AND dataset='activity_details' AND (record_key=? OR json_extract(payload_raw,'$.activity_id')=? OR json_extract(payload_raw,'$.activityId')=?) LIMIT 1`, athleteID, key, value.Value.ActivityID, value.Value.ActivityID).Scan(&detailRaw)
 		if errors.Is(err, sql.ErrNoRows) {
-			result.Warnings = []Warning{{Code: "MISSING_ACTIVITY_DETAIL", Severity: "info", Message: "Activity detail is unavailable."}}
+			result.Warnings = activityDetailWarnings(include, nil, false)
 		} else if err != nil {
 			return ActivityResult{}, errors.New("internal_error: detail lookup")
 		} else {
@@ -291,6 +298,17 @@ func (r *Repository) Activity(ctx context.Context, athleteID, activityID string,
 			}
 			d := detail.Value
 			d.Summary = value.Value
+			if !has(include, "splits") {
+				d.Splits = nil
+			}
+			if !has(include, "zones") {
+				d.HRZones, d.PowerZones = nil, nil
+			}
+			if !has(include, "metrics") {
+				d.Metrics = nil
+				d.SourcePoints, d.ReturnedPoints, d.Truncated = 0, 0, false
+			}
+			result.Warnings = activityDetailWarnings(include, detail.Completeness, true)
 			if resolution <= 0 {
 				resolution = 30
 			}
@@ -304,6 +322,77 @@ func (r *Repository) Activity(ctx context.Context, athleteID, activityID string,
 		}
 	}
 	return result, nil
+}
+
+func projectActivitySummary(value fitnessdata.ActivitySummary, detail string) fitnessdata.ActivitySummary {
+	if detail == "full" {
+		return value
+	}
+	if detail == "compact" {
+		value.Dataset = ""
+		value.RecordKey = ""
+		value.IngestedAt = nil
+		value.ParentType = nil
+		value.MovingMinutes = nil
+		value.ElapsedMinutes = nil
+		value.PaceMinPerKM = nil
+		value.SpeedKPH = nil
+		value.ElevationGainM, value.ElevationLossM = nil, nil
+		value.AverageHR, value.MaxHR = nil, nil
+		value.HRZoneMinutes = nil
+		value.Calories = nil
+		value.AerobicEffect, value.AnaerobicEffect = nil, nil
+		value.TrainingEffectLabel = nil
+		value.VO2Max = nil
+		value.Cadence, value.Power, value.GradeAdjustedPace = nil, nil, nil
+		value.Respiration, value.Temperature = nil, nil
+		value.WaterLoss, value.BodyBatteryChange = nil, nil
+		value.Steps, value.IntensityMinutes = nil, nil
+		value.Fastest1K, value.FastestMile = nil, nil
+		value.PersonalRecord, value.LapCount, value.Manufacturer = nil, nil, nil
+		value.PerceivedEffort, value.Notes = nil, nil
+		return value
+	}
+	value.Cadence, value.Power, value.GradeAdjustedPace = nil, nil, nil
+	value.Respiration, value.Temperature = nil, nil
+	value.WaterLoss, value.BodyBatteryChange = nil, nil
+	value.Steps, value.IntensityMinutes = nil, nil
+	value.Fastest1K, value.FastestMile = nil, nil
+	value.PersonalRecord, value.LapCount, value.Manufacturer = nil, nil, nil
+	if !hasHRZoneMinutes(value.HRZoneMinutes) {
+		value.HRZoneMinutes = nil
+	}
+	return value
+}
+
+func hasHRZoneMinutes(values []*float64) bool {
+	for _, value := range values {
+		if value != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func activityDetailWarnings(include []string, completeness fitnessdata.Availability, detailFound bool) []Warning {
+	warnings := []Warning{}
+	if !detailFound {
+		warnings = append(warnings, Warning{Code: "MISSING_ACTIVITY_DETAIL", Severity: "info", Message: "Activity detail is unavailable."})
+	}
+	for _, section := range []struct {
+		name    string
+		code    string
+		message string
+	}{
+		{name: "splits", code: "MISSING_ACTIVITY_SPLITS", message: "Activity splits are unavailable."},
+		{name: "zones", code: "MISSING_ACTIVITY_ZONES", message: "Activity zones are unavailable."},
+		{name: "metrics", code: "MISSING_ACTIVITY_METRICS", message: "Activity metrics are unavailable."},
+	} {
+		if has(include, section.name) && (completeness == nil || !completeness[section.name]) {
+			warnings = append(warnings, Warning{Code: section.code, Severity: "info", Message: section.message})
+		}
+	}
+	return warnings
 }
 
 func downsample(points []fitnessdata.MetricPoint, resolution, maxPoints int) ([]fitnessdata.MetricPoint, bool) {
@@ -664,7 +753,8 @@ func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, cl
 	}
 	var owner string
 	var old int64
-	if err := tx.QueryRowContext(ctx, "SELECT athlete_id,client_updated_at FROM workout_sessions WHERE id=?", id).Scan(&owner, &old); err != nil {
+	var oldDeleted sql.NullInt64
+	if err := tx.QueryRowContext(ctx, "SELECT athlete_id,client_updated_at,deleted_at FROM workout_sessions WHERE id=?", id).Scan(&owner, &old, &oldDeleted); err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
 			return WorkoutWinner{}, errors.New("not_found: workout")
@@ -678,7 +768,7 @@ func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, cl
 	if clientUpdatedAt <= old {
 		_ = tx.Commit()
 		w, e := r.loadWorkoutWithDB(ctx, athleteID, id)
-		return WorkoutWinner{Workout: w, SubmittedVersionWon: false, ServerSyncedAt: winnerClock(ctx, r.db, id)}, e
+		return WorkoutWinner{Workout: w, Deleted: oldDeleted.Valid, SubmittedVersionWon: false, ServerSyncedAt: winnerClock(ctx, r.db, id)}, e
 	}
 	clock := r.now()
 	if _, err := tx.ExecContext(ctx, "UPDATE workout_sessions SET deleted_at=?,client_updated_at=?,server_synced_at=? WHERE id=?", clock, clientUpdatedAt, clock, id); err != nil {
@@ -702,7 +792,7 @@ func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, cl
 		return WorkoutWinner{}, errors.New("internal_error: transaction commit")
 	}
 	w, e := r.loadWorkoutWithDB(ctx, athleteID, id)
-	return WorkoutWinner{Workout: w, SubmittedVersionWon: true, ServerSyncedAt: seq}, e
+	return WorkoutWinner{Workout: w, Deleted: true, SubmittedVersionWon: true, ServerSyncedAt: seq}, e
 }
 
 func (r *Repository) loadWorkoutWithDB(ctx context.Context, athleteID, id string) (StrengthWorkout, error) {
