@@ -416,30 +416,28 @@ func (r *Repository) StrengthWorkouts(ctx context.Context, athleteID string, q S
 	if err != nil {
 		return Page[StrengthWorkout]{}, err
 	}
-	rows, err := r.db.QueryContext(ctx, "SELECT id,workout_date,title,source,metadata_raw FROM workout_sessions WHERE athlete_id=? AND deleted_at IS NULL AND workout_date BETWEEN ? AND ? ORDER BY workout_date "+map[bool]string{true: "ASC", false: "DESC"}[order == "asc"]+",id "+map[bool]string{true: "ASC", false: "DESC"}[order == "asc"], athleteID, q.From, q.To)
+	rows, err := r.db.QueryContext(ctx, "SELECT id,workout_date FROM workout_sessions WHERE athlete_id=? AND deleted_at IS NULL AND workout_date BETWEEN ? AND ? ORDER BY workout_date "+map[bool]string{true: "ASC", false: "DESC"}[order == "asc"]+",id "+map[bool]string{true: "ASC", false: "DESC"}[order == "asc"], athleteID, q.From, q.To)
 	if err != nil {
 		return Page[StrengthWorkout]{}, errors.New("internal_error: workout query")
 	}
 	defer rows.Close()
 	items := make([]StrengthWorkout, 0, limit+1)
 	for rows.Next() {
-		var id, date, title, source, metadata string
-		if err := rows.Scan(&id, &date, &title, &source, &metadata); err != nil {
+		var id, date string
+		if err := rows.Scan(&id, &date); err != nil {
 			return Page[StrengthWorkout]{}, errors.New("internal_error: workout row")
 		}
 		if cur != nil && !afterCursor(date, id, cur.Date, cur.ID, order) {
 			continue
 		}
-		workout := decodeWorkout(id, date, title, source, metadata)
-		if workout == nil {
+		value, err := loadWorkoutAggregate(ctx, r.db, athleteID, id)
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
-		entries, err := r.entries(ctx, athleteID, id, true)
 		if err != nil {
 			return Page[StrengthWorkout]{}, err
 		}
-		workout.Entries = entries
-		workout.Summary = summarizeStrength(entries)
+		workout := &value
 		if workout.Summary.WorkingSets == 0 && workout.LinkedActivityID == nil && workout.WorkoutType != "strength" {
 			continue
 		}
@@ -642,6 +640,13 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 			return rollback(normalizeWriteError(err))
 		}
 	}
+	seq, err := allocateSyncSeq(ctx, tx)
+	if err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE workout_sessions SET sync_seq=? WHERE id=?", seq, in.ID); err != nil {
+		return rollback(errors.New("internal_error: workout sequence"))
+	}
 	if err := tx.Commit(); err != nil {
 		return WorkoutWinner{}, errors.New("internal_error: transaction commit")
 	}
@@ -649,7 +654,7 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 	if err != nil {
 		return WorkoutWinner{}, err
 	}
-	return WorkoutWinner{Workout: w, Created: created, SubmittedVersionWon: true, ServerSyncedAt: clock}, nil
+	return WorkoutWinner{Workout: w, Created: created, SubmittedVersionWon: true, ServerSyncedAt: seq}, nil
 }
 
 func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, clientUpdatedAt int64) (WorkoutWinner, error) {
@@ -684,11 +689,20 @@ func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, cl
 		_ = tx.Rollback()
 		return WorkoutWinner{}, errors.New("internal_error: entry delete")
 	}
+	seq, err := allocateSyncSeq(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback()
+		return WorkoutWinner{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE workout_sessions SET sync_seq=? WHERE id=?", seq, id); err != nil {
+		_ = tx.Rollback()
+		return WorkoutWinner{}, errors.New("internal_error: workout sequence")
+	}
 	if err := tx.Commit(); err != nil {
 		return WorkoutWinner{}, errors.New("internal_error: transaction commit")
 	}
 	w, e := r.loadWorkoutWithDB(ctx, athleteID, id)
-	return WorkoutWinner{Workout: w, SubmittedVersionWon: true, ServerSyncedAt: clock}, e
+	return WorkoutWinner{Workout: w, SubmittedVersionWon: true, ServerSyncedAt: seq}, e
 }
 
 func (r *Repository) loadWorkoutWithDB(ctx context.Context, athleteID, id string) (StrengthWorkout, error) {

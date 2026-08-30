@@ -103,13 +103,56 @@ func profileSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "client_updated_at": integer(0, 9223372036854775807), "timezone": str(64), "units": enum("metric"), "birth_year": nullable(integer(1900, 2100)), "goals": array(goalSchema(), 0, 10), "target_events": array(eventSchema(), 0, 20), "weekly_availability": map[string]any{"type": "object", "additionalProperties": array(windowSchema(), 0, 5)}, "preferences": obj(map[string]any{"run_days": integer(0, 7), "strength_sessions": integer(0, 7), "preferred_weekdays": array(enum("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"), 0, 7), "back_to_back_hard_days": map[string]any{"type": "boolean"}}), "heart_rate_zones": array(zoneSchema(), 0, 10), "pace_zones": array(zoneSchema(), 0, 10), "power_zones": array(zoneSchema(), 0, 10), "constraints": map[string]any{"type": "object", "additionalProperties": map[string]any{}}, "conditions_and_injuries": array(conditionSchema(), 0, 20)}, "client_updated_at", "timezone", "units")
 }
 func planSchema() map[string]any {
-	return obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "include_completed": map[string]any{"type": "boolean"}}, "from", "to")
+	return obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "plan_id": str(64), "include_steps": map[string]any{"type": "boolean"}, "include_completed": map[string]any{"type": "boolean"}}, "from", "to")
 }
 func targetsSchema() map[string]any {
 	return obj(map[string]any{"duration_minutes": nullable(number(0, 1440)), "distance_km": nullable(number(0, 10000)), "heart_rate_zone": nullable(str(32)), "pace_min_per_km_min": nullable(number(0, 1000)), "pace_min_per_km_max": nullable(number(0, 1000)), "sets": nullable(integer(0, 10000)), "reps": nullable(integer(0, 100000)), "load_kg": nullable(number(0, 2000))})
 }
 func plannedSessionSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "plan_id": str(64), "session_id": str(64), "client_updated_at": integer(0, 9223372036854775807), "date": dateSchema(), "sport": enum("running", "walking", "cycling", "swimming", "strength", "cardio", "mobility", "hiking", "multisport", "other"), "session_type": str(64), "priority": enum("optional", "normal", "key"), "targets": targetsSchema(), "notes": nullable(str(4000))}, "plan_id", "session_id", "client_updated_at", "date", "sport", "session_type", "priority")
+}
+
+func prescriptionSetSchema() map[string]any {
+	return obj(map[string]any{
+		"reps_min": nullable(integer(0, 1000)), "reps_max": nullable(integer(0, 1000)),
+		"load_kg": nullable(number(0, 2000)), "rir": nullable(number(0, 10)), "rpe": nullable(number(1, 10)),
+		"duration_seconds": nullable(integer(0, 86400)), "rest_seconds": nullable(integer(0, 86400)), "tempo": nullable(str(32)),
+	})
+}
+func prescriptionSchema() map[string]any {
+	return obj(map[string]any{
+		"sets": array(prescriptionSetSchema(), 0, 20), "rounds": nullable(integer(0, 1000)),
+		"distance_meters": nullable(number(0, 1000000)), "duration_seconds": nullable(integer(0, 86400)),
+		"pace_min_per_km_min": nullable(number(0, 1000)), "pace_min_per_km_max": nullable(number(0, 1000)),
+		"heart_rate_zone": nullable(str(64)),
+	})
+}
+func plannedStepSchema() map[string]any {
+	return obj(map[string]any{
+		"step_id": str(64), "planned_session_id": nullable(str(64)), "athlete_id": nullable(str(64)),
+		"sequence_no": integer(1, 50), "step_type": enum("warmup", "exercise", "interval", "rest", "cooldown", "note"),
+		"exercise_key": nullable(str(128)), "exercise_name": nullable(str(256)), "prescription": prescriptionSchema(), "notes": nullable(str(4000)),
+	}, "step_id", "sequence_no", "step_type", "prescription")
+}
+func planDraftSessionSchema() map[string]any {
+	return obj(map[string]any{
+		"session_id": str(64), "date": dateSchema(), "title": str(512), "description": nullable(str(4000)),
+		"sport": str(64), "session_type": str(64), "priority": str(32), "targets": targetsSchema(), "notes": nullable(str(4000)),
+		"steps": array(plannedStepSchema(), 0, 50),
+	}, "session_id", "date", "sport", "session_type", "priority", "steps")
+}
+func planDraftSchema() map[string]any {
+	return obj(map[string]any{
+		"target_athlete_id": targetProp(), "plan_id": str(64), "title": str(512), "description": nullable(str(4000)),
+		"goal": map[string]any{"type": "object", "additionalProperties": true}, "start_date": nullable(dateSchema()), "end_date": nullable(dateSchema()),
+		"source_ref": nullable(str(512)), "sessions": array(planDraftSessionSchema(), 0, 120),
+	}, "plan_id", "title", "sessions")
+}
+func publishPlanSchema() map[string]any {
+	return obj(map[string]any{"target_athlete_id": targetProp(), "plan_id": str(64)}, "plan_id")
+}
+func workoutSchema() map[string]any {
+	return obj(map[string]any{"target_athlete_id": targetProp(), "workout_id": str(64)}, "workout_id")
 }
 func plannedStatusSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "session_id": str(64), "client_updated_at": integer(0, 9223372036854775807), "status": enum("planned", "completed", "skipped", "cancelled"), "completed_activity_id": nullable(str(128)), "completed_workout_id": nullable(str(64))}, "session_id", "client_updated_at", "status")

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/oapi-codegen/runtime"
@@ -25,11 +26,46 @@ const (
 	BearerAuthScopes = "BearerAuth.Scopes"
 )
 
+// Defines values for AthleteUnits.
+const (
+	Metric AthleteUnits = "metric"
+)
+
+// Defines values for PlannedSessionStatus.
+const (
+	PlannedSessionStatusCancelled PlannedSessionStatus = "cancelled"
+	PlannedSessionStatusCompleted PlannedSessionStatus = "completed"
+	PlannedSessionStatusPlanned   PlannedSessionStatus = "planned"
+	PlannedSessionStatusSkipped   PlannedSessionStatus = "skipped"
+)
+
+// Defines values for PlannedStepStepType.
+const (
+	PlannedStepStepTypeCooldown PlannedStepStepType = "cooldown"
+	PlannedStepStepTypeExercise PlannedStepStepType = "exercise"
+	PlannedStepStepTypeInterval PlannedStepStepType = "interval"
+	PlannedStepStepTypeNote     PlannedStepStepType = "note"
+	PlannedStepStepTypeRest     PlannedStepStepType = "rest"
+	PlannedStepStepTypeWarmup   PlannedStepStepType = "warmup"
+)
+
 // Defines values for SyncChangeKind.
 const (
 	SyncChangeKindDocument SyncChangeKind = "document"
 	SyncChangeKindEntry    SyncChangeKind = "entry"
 	SyncChangeKindSession  SyncChangeKind = "session"
+)
+
+// Defines values for SyncChangeV2Kind.
+const (
+	SyncChangeV2KindTrainingPlan SyncChangeV2Kind = "training_plan"
+	SyncChangeV2KindWorkout      SyncChangeV2Kind = "workout"
+)
+
+// Defines values for SyncChangeV2Operation.
+const (
+	Delete SyncChangeV2Operation = "delete"
+	Upsert SyncChangeV2Operation = "upsert"
 )
 
 // Defines values for SyncMutationKind.
@@ -39,11 +75,44 @@ const (
 	SyncMutationKindSession  SyncMutationKind = "session"
 )
 
+// Defines values for TrainingPlanStatus.
+const (
+	TrainingPlanStatusActive    TrainingPlanStatus = "active"
+	TrainingPlanStatusArchived  TrainingPlanStatus = "archived"
+	TrainingPlanStatusCompleted TrainingPlanStatus = "completed"
+	TrainingPlanStatusDraft     TrainingPlanStatus = "draft"
+)
+
+// Defines values for WorkoutStatus.
+const (
+	Completed  WorkoutStatus = "completed"
+	Discarded  WorkoutStatus = "discarded"
+	InProgress WorkoutStatus = "in_progress"
+)
+
+// Defines values for WorkoutEntryEntryType.
+const (
+	WorkoutEntryEntryTypeNote WorkoutEntryEntryType = "note"
+	WorkoutEntryEntryTypeRest WorkoutEntryEntryType = "rest"
+	WorkoutEntryEntryTypeSet  WorkoutEntryEntryType = "set"
+)
+
 // ActivityPage defines model for ActivityPage.
 type ActivityPage struct {
 	Items      []HealthRecord `json:"items"`
 	NextCursor *string        `json:"next_cursor,omitempty"`
 }
+
+// Athlete defines model for Athlete.
+type Athlete struct {
+	AthleteId openapi_types.UUID `json:"athlete_id"`
+	Handle    string             `json:"handle"`
+	Timezone  string             `json:"timezone"`
+	Units     *AthleteUnits      `json:"units,omitempty"`
+}
+
+// AthleteUnits defines model for Athlete.Units.
+type AthleteUnits string
 
 // Error defines model for Error.
 type Error struct {
@@ -64,6 +133,104 @@ type HealthRecord struct {
 	Payload    interface{}        `json:"payload"`
 	RecordDate openapi_types.Date `json:"record_date"`
 	RecordKey  string             `json:"record_key"`
+}
+
+// MeResponse defines model for MeResponse.
+type MeResponse struct {
+	AccessibleAthletes []Athlete `json:"accessible_athletes"`
+	Athlete            Athlete   `json:"athlete"`
+	Capabilities       struct {
+		Plans    *bool `json:"plans,omitempty"`
+		Sync     *bool `json:"sync,omitempty"`
+		Workouts *bool `json:"workouts,omitempty"`
+	} `json:"capabilities"`
+}
+
+// PlanResponse defines model for PlanResponse.
+type PlanResponse struct {
+	Plan *TrainingPlan `json:"plan"`
+}
+
+// PlannedSession defines model for PlannedSession.
+type PlannedSession struct {
+	AthleteId           openapi_types.UUID   `json:"athlete_id"`
+	CompletedActivityId *string              `json:"completed_activity_id"`
+	CompletedWorkoutId  *openapi_types.UUID  `json:"completed_workout_id"`
+	Date                openapi_types.Date   `json:"date"`
+	Description         *string              `json:"description"`
+	Notes               *string              `json:"notes"`
+	PlanId              openapi_types.UUID   `json:"plan_id"`
+	Priority            string               `json:"priority"`
+	SessionId           openapi_types.UUID   `json:"session_id"`
+	SessionType         string               `json:"session_type"`
+	Sport               string               `json:"sport"`
+	Status              PlannedSessionStatus `json:"status"`
+	Steps               []PlannedStep        `json:"steps"`
+	Targets             PlannedTargets       `json:"targets"`
+	Title               string               `json:"title"`
+}
+
+// PlannedSessionStatus defines model for PlannedSession.Status.
+type PlannedSessionStatus string
+
+// PlannedSessionsResponse defines model for PlannedSessionsResponse.
+type PlannedSessionsResponse struct {
+	Sessions []PlannedSession `json:"sessions"`
+}
+
+// PlannedStep defines model for PlannedStep.
+type PlannedStep struct {
+	ExerciseKey  *string             `json:"exercise_key"`
+	ExerciseName *string             `json:"exercise_name"`
+	Notes        *string             `json:"notes"`
+	Prescription Prescription        `json:"prescription"`
+	SequenceNo   int                 `json:"sequence_no"`
+	StepId       openapi_types.UUID  `json:"step_id"`
+	StepType     PlannedStepStepType `json:"step_type"`
+}
+
+// PlannedStepStepType defines model for PlannedStep.StepType.
+type PlannedStepStepType string
+
+// PlannedTargets defines model for PlannedTargets.
+type PlannedTargets struct {
+	DistanceKm      *float32 `json:"distance_km"`
+	DurationMinutes *float32 `json:"duration_minutes"`
+	HeartRateZone   *string  `json:"heart_rate_zone"`
+	LoadKg          *float32 `json:"load_kg"`
+	PaceMinPerKmMax *float32 `json:"pace_min_per_km_max"`
+	PaceMinPerKmMin *float32 `json:"pace_min_per_km_min"`
+	Reps            *int     `json:"reps"`
+	Sets            *int     `json:"sets"`
+}
+
+// Prescription defines model for Prescription.
+type Prescription struct {
+	DistanceMeters  *float32           `json:"distance_meters"`
+	DurationSeconds *int               `json:"duration_seconds"`
+	HeartRateZone   *string            `json:"heart_rate_zone"`
+	PaceMinPerKmMax *float32           `json:"pace_min_per_km_max"`
+	PaceMinPerKmMin *float32           `json:"pace_min_per_km_min"`
+	Rounds          *int               `json:"rounds"`
+	Sets            *[]PrescriptionSet `json:"sets,omitempty"`
+}
+
+// PrescriptionSet defines model for PrescriptionSet.
+type PrescriptionSet struct {
+	DurationSeconds *int     `json:"duration_seconds"`
+	LoadKg          *float32 `json:"load_kg"`
+	RepsMax         *int     `json:"reps_max"`
+	RepsMin         *int     `json:"reps_min"`
+	RestSeconds     *int     `json:"rest_seconds"`
+	Rir             *float32 `json:"rir"`
+	Rpe             *float32 `json:"rpe"`
+	Tempo           *string  `json:"tempo"`
+}
+
+// PublishPlanResponse defines model for PublishPlanResponse.
+type PublishPlanResponse struct {
+	ArchivedPlanId *openapi_types.UUID `json:"archived_plan_id"`
+	Plan           TrainingPlan        `json:"plan"`
 }
 
 // SyncChange defines model for SyncChange.
@@ -88,6 +255,21 @@ type SyncChange struct {
 // SyncChangeKind defines model for SyncChange.Kind.
 type SyncChangeKind string
 
+// SyncChangeV2 defines model for SyncChangeV2.
+type SyncChangeV2 struct {
+	Entity    interface{}           `json:"entity,omitempty"`
+	EntityId  openapi_types.UUID    `json:"entity_id"`
+	Kind      SyncChangeV2Kind      `json:"kind"`
+	Operation SyncChangeV2Operation `json:"operation"`
+	SyncSeq   int64                 `json:"sync_seq"`
+}
+
+// SyncChangeV2Kind defines model for SyncChangeV2.Kind.
+type SyncChangeV2Kind string
+
+// SyncChangeV2Operation defines model for SyncChangeV2.Operation.
+type SyncChangeV2Operation string
+
 // SyncMutation defines model for SyncMutation.
 type SyncMutation struct {
 	AthleteId       openapi_types.UUID  `json:"athlete_id"`
@@ -109,6 +291,13 @@ type SyncMutation struct {
 // SyncMutationKind defines model for SyncMutation.Kind.
 type SyncMutationKind string
 
+// SyncPageV2 defines model for SyncPageV2.
+type SyncPageV2 struct {
+	Changes   []SyncChangeV2 `json:"changes"`
+	HasMore   bool           `json:"has_more"`
+	NextAfter int64          `json:"next_after"`
+}
+
 // SyncPullResponse defines model for SyncPullResponse.
 type SyncPullResponse struct {
 	Changes   []SyncChange `json:"changes"`
@@ -125,6 +314,85 @@ type SyncPushResponse struct {
 	Winners []SyncChange `json:"winners"`
 }
 
+// TrainingPlan defines model for TrainingPlan.
+type TrainingPlan struct {
+	AthleteId   openapi_types.UUID     `json:"athlete_id"`
+	CreatedAt   *int64                 `json:"created_at,omitempty"`
+	Description *string                `json:"description"`
+	EndDate     *openapi_types.Date    `json:"end_date"`
+	Goal        map[string]interface{} `json:"goal"`
+	PlanId      openapi_types.UUID     `json:"plan_id"`
+	Sessions    []PlannedSession       `json:"sessions"`
+	Source      string                 `json:"source"`
+	SourceRef   *string                `json:"source_ref"`
+	StartDate   *openapi_types.Date    `json:"start_date"`
+	Status      TrainingPlanStatus     `json:"status"`
+	SyncSeq     int64                  `json:"sync_seq"`
+	Title       string                 `json:"title"`
+}
+
+// TrainingPlanStatus defines model for TrainingPlan.Status.
+type TrainingPlanStatus string
+
+// Workout defines model for Workout.
+type Workout struct {
+	AthleteId        openapi_types.UUID      `json:"athlete_id"`
+	Comparison       *map[string]interface{} `json:"comparison,omitempty"`
+	CompletedAt      *time.Time              `json:"completed_at"`
+	Date             openapi_types.Date      `json:"date"`
+	DurationMinutes  *float32                `json:"duration_minutes"`
+	Entries          []WorkoutEntry          `json:"entries"`
+	LinkedActivityId *string                 `json:"linked_activity_id"`
+	Notes            *string                 `json:"notes"`
+	PerceivedEffort  *float32                `json:"perceived_effort"`
+	PlannedSession   *PlannedSession         `json:"planned_session,omitempty"`
+	PlannedSessionId *openapi_types.UUID     `json:"planned_session_id"`
+	Source           string                  `json:"source"`
+	StartedAt        *time.Time              `json:"started_at"`
+	Status           WorkoutStatus           `json:"status"`
+	SyncSeq          *int64                  `json:"sync_seq,omitempty"`
+	Title            string                  `json:"title"`
+	WorkoutId        openapi_types.UUID      `json:"workout_id"`
+	WorkoutType      *string                 `json:"workout_type,omitempty"`
+}
+
+// WorkoutStatus defines model for Workout.Status.
+type WorkoutStatus string
+
+// WorkoutEntry defines model for WorkoutEntry.
+type WorkoutEntry struct {
+	DurationSeconds *float32              `json:"duration_seconds"`
+	EntryId         openapi_types.UUID    `json:"entry_id"`
+	EntryType       WorkoutEntryEntryType `json:"entry_type"`
+	ExerciseKey     *string               `json:"exercise_key"`
+	ExerciseName    *string               `json:"exercise_name"`
+	IsBodyweight    *bool                 `json:"is_bodyweight,omitempty"`
+	IsWarmup        *bool                 `json:"is_warmup,omitempty"`
+	Laterality      *string               `json:"laterality"`
+	LoadDescription *string               `json:"load_description"`
+	LoadKg          *float32              `json:"load_kg"`
+	MuscleGroups    *[]string             `json:"muscle_groups,omitempty"`
+	Notes           *string               `json:"notes"`
+	PlannedStepId   *openapi_types.UUID   `json:"planned_step_id"`
+	Reps            *float32              `json:"reps"`
+	Rir             *float32              `json:"rir"`
+	RirMax          *float32              `json:"rir_max"`
+	RirMin          *float32              `json:"rir_min"`
+	SequenceNo      int                   `json:"sequence_no"`
+	SetNumber       *int                  `json:"set_number"`
+	ToFailure       *bool                 `json:"to_failure,omitempty"`
+	UserLabel       *string               `json:"user_label"`
+}
+
+// WorkoutEntryEntryType defines model for WorkoutEntry.EntryType.
+type WorkoutEntryEntryType string
+
+// WorkoutPage defines model for WorkoutPage.
+type WorkoutPage struct {
+	Items      []Workout `json:"items"`
+	NextCursor *string   `json:"next_cursor"`
+}
+
 // AthleteID defines model for AthleteID.
 type AthleteID = openapi_types.UUID
 
@@ -134,14 +402,38 @@ type Cursor = string
 // FromDate defines model for FromDate.
 type FromDate = openapi_types.Date
 
+// FromDateOptional defines model for FromDateOptional.
+type FromDateOptional = openapi_types.Date
+
+// IncludeSteps defines model for IncludeSteps.
+type IncludeSteps = bool
+
 // Limit defines model for Limit.
 type Limit = int
+
+// LimitV2 defines model for LimitV2.
+type LimitV2 = int
+
+// PlanID defines model for PlanID.
+type PlanID = openapi_types.UUID
+
+// SessionID defines model for SessionID.
+type SessionID = openapi_types.UUID
 
 // ToDate defines model for ToDate.
 type ToDate = openapi_types.Date
 
+// ToDateOptional defines model for ToDateOptional.
+type ToDateOptional = openapi_types.Date
+
+// WorkoutID defines model for WorkoutID.
+type WorkoutID = openapi_types.UUID
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
+
+// Conflict defines model for Conflict.
+type Conflict = Error
 
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
@@ -151,6 +443,9 @@ type NotFound = Error
 
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = Error
 
 // Unprocessable defines model for Unprocessable.
 type Unprocessable = Error
@@ -176,8 +471,41 @@ type PullSyncParams struct {
 	Since int64 `form:"since" json:"since"`
 }
 
+// GetPlannedSessionsParams defines parameters for GetPlannedSessions.
+type GetPlannedSessionsParams struct {
+	From         FromDate      `form:"from" json:"from"`
+	To           ToDate        `form:"to" json:"to"`
+	IncludeSteps *IncludeSteps `form:"include_steps,omitempty" json:"include_steps,omitempty"`
+}
+
+// GetTrainingPlanByIdParams defines parameters for GetTrainingPlanById.
+type GetTrainingPlanByIdParams struct {
+	IncludeSteps *IncludeSteps `form:"include_steps,omitempty" json:"include_steps,omitempty"`
+}
+
+// GetWorkoutsParams defines parameters for GetWorkouts.
+type GetWorkoutsParams struct {
+	From   *FromDateOptional `form:"from,omitempty" json:"from,omitempty"`
+	To     *ToDateOptional   `form:"to,omitempty" json:"to,omitempty"`
+	Limit  *LimitV2          `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *Cursor           `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// PullSyncV2Params defines parameters for PullSyncV2.
+type PullSyncV2Params struct {
+	AthleteId openapi_types.UUID `form:"athlete_id" json:"athlete_id"`
+	After     *int64             `form:"after,omitempty" json:"after,omitempty"`
+	Limit     *int               `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // PushSyncJSONRequestBody defines body for PushSync for application/json ContentType.
 type PushSyncJSONRequestBody = SyncPushRequest
+
+// SaveWorkoutJSONRequestBody defines body for SaveWorkout for application/json ContentType.
+type SaveWorkoutJSONRequestBody = Workout
+
+// CompleteWorkoutJSONRequestBody defines body for CompleteWorkout for application/json ContentType.
+type CompleteWorkoutJSONRequestBody = Workout
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -193,6 +521,39 @@ type ServerInterface interface {
 
 	// (POST /api/v1/sync/push)
 	PushSync(w http.ResponseWriter, r *http.Request)
+
+	// (GET /api/v2/athletes/{id}/planned-sessions)
+	GetPlannedSessions(w http.ResponseWriter, r *http.Request, id AthleteID, params GetPlannedSessionsParams)
+
+	// (POST /api/v2/athletes/{id}/planned-sessions/{sessionId}/skip)
+	SkipPlannedSession(w http.ResponseWriter, r *http.Request, id AthleteID, sessionId SessionID)
+
+	// (GET /api/v2/athletes/{id}/training-plans/active)
+	GetActiveTrainingPlan(w http.ResponseWriter, r *http.Request, id AthleteID)
+
+	// (GET /api/v2/athletes/{id}/training-plans/{planId})
+	GetTrainingPlanById(w http.ResponseWriter, r *http.Request, id AthleteID, planId PlanID, params GetTrainingPlanByIdParams)
+
+	// (POST /api/v2/athletes/{id}/training-plans/{planId}/publish)
+	PublishTrainingPlan(w http.ResponseWriter, r *http.Request, id AthleteID, planId PlanID)
+
+	// (GET /api/v2/athletes/{id}/workouts)
+	GetWorkouts(w http.ResponseWriter, r *http.Request, id AthleteID, params GetWorkoutsParams)
+
+	// (GET /api/v2/athletes/{id}/workouts/{workoutId})
+	GetWorkoutById(w http.ResponseWriter, r *http.Request, id AthleteID, workoutId WorkoutID)
+
+	// (PUT /api/v2/athletes/{id}/workouts/{workoutId})
+	SaveWorkout(w http.ResponseWriter, r *http.Request, id AthleteID, workoutId WorkoutID)
+
+	// (POST /api/v2/athletes/{id}/workouts/{workoutId}/complete)
+	CompleteWorkout(w http.ResponseWriter, r *http.Request, id AthleteID, workoutId WorkoutID)
+
+	// (GET /api/v2/me)
+	GetMe(w http.ResponseWriter, r *http.Request)
+
+	// (GET /api/v2/sync/pull)
+	PullSyncV2(w http.ResponseWriter, r *http.Request, params PullSyncV2Params)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -424,6 +785,502 @@ func (siw *ServerInterfaceWrapper) PushSync(w http.ResponseWriter, r *http.Reque
 	handler.ServeHTTP(w, r)
 }
 
+// GetPlannedSessions operation middleware
+func (siw *ServerInterfaceWrapper) GetPlannedSessions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPlannedSessionsParams
+
+	// ------------- Required query parameter "from" -------------
+
+	if paramValue := r.URL.Query().Get("from"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "from"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "from", r.URL.Query(), &params.From)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "to" -------------
+
+	if paramValue := r.URL.Query().Get("to"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "to", r.URL.Query(), &params.To)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "include_steps" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include_steps", r.URL.Query(), &params.IncludeSteps)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_steps", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPlannedSessions(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SkipPlannedSession operation middleware
+func (siw *ServerInterfaceWrapper) SkipPlannedSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "sessionId" -------------
+	var sessionId SessionID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sessionId", r.PathValue("sessionId"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sessionId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SkipPlannedSession(w, r, id, sessionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetActiveTrainingPlan operation middleware
+func (siw *ServerInterfaceWrapper) GetActiveTrainingPlan(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetActiveTrainingPlan(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTrainingPlanById operation middleware
+func (siw *ServerInterfaceWrapper) GetTrainingPlanById(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "planId" -------------
+	var planId PlanID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "planId", r.PathValue("planId"), &planId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "planId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTrainingPlanByIdParams
+
+	// ------------- Optional query parameter "include_steps" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include_steps", r.URL.Query(), &params.IncludeSteps)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_steps", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTrainingPlanById(w, r, id, planId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PublishTrainingPlan operation middleware
+func (siw *ServerInterfaceWrapper) PublishTrainingPlan(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "planId" -------------
+	var planId PlanID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "planId", r.PathValue("planId"), &planId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "planId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PublishTrainingPlan(w, r, id, planId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWorkouts operation middleware
+func (siw *ServerInterfaceWrapper) GetWorkouts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetWorkoutsParams
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "from", r.URL.Query(), &params.From)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "to", r.URL.Query(), &params.To)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWorkouts(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWorkoutById operation middleware
+func (siw *ServerInterfaceWrapper) GetWorkoutById(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "workoutId" -------------
+	var workoutId WorkoutID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workoutId", r.PathValue("workoutId"), &workoutId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workoutId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWorkoutById(w, r, id, workoutId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SaveWorkout operation middleware
+func (siw *ServerInterfaceWrapper) SaveWorkout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "workoutId" -------------
+	var workoutId WorkoutID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workoutId", r.PathValue("workoutId"), &workoutId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workoutId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SaveWorkout(w, r, id, workoutId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteWorkout operation middleware
+func (siw *ServerInterfaceWrapper) CompleteWorkout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "workoutId" -------------
+	var workoutId WorkoutID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workoutId", r.PathValue("workoutId"), &workoutId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workoutId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteWorkout(w, r, id, workoutId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMe operation middleware
+func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PullSyncV2 operation middleware
+func (siw *ServerInterfaceWrapper) PullSyncV2(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PullSyncV2Params
+
+	// ------------- Required query parameter "athlete_id" -------------
+
+	if paramValue := r.URL.Query().Get("athlete_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "athlete_id"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "athlete_id", r.URL.Query(), &params.AthleteId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "athlete_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "after" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "after", r.URL.Query(), &params.After)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "after", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PullSyncV2(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -548,6 +1405,17 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/v1/athletes/{id}/health/daily", wrapper.GetDailyHealth)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v1/sync/pull", wrapper.PullSync)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1/sync/push", wrapper.PushSync)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/planned-sessions", wrapper.GetPlannedSessions)
+	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/planned-sessions/{sessionId}/skip", wrapper.SkipPlannedSession)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/active", wrapper.GetActiveTrainingPlan)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/{planId}", wrapper.GetTrainingPlanById)
+	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/{planId}/publish", wrapper.PublishTrainingPlan)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/workouts", wrapper.GetWorkouts)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}", wrapper.GetWorkoutById)
+	m.HandleFunc("PUT "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}", wrapper.SaveWorkout)
+	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}/complete", wrapper.CompleteWorkout)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/me", wrapper.GetMe)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/sync/pull", wrapper.PullSyncV2)
 
 	return m
 }
@@ -555,31 +1423,60 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
+	"H4sIAAAAAAAC/+xcW4/btrP/KgLPeVRsr5sU/+O39JI2QNsEyZ70IQ0EWhxb7EqkQlK7cQN/9z940dWS",
+	"RdlrY4v2zZbI4XDmx+FwZqivKOZZzhkwJdHqK8qxwBkoEObfS5WkoOD1D/oPZWiFcqwSFCKGM0ArRAkK",
+	"kYDPBRVA0EqJAkIk4wQyrHtsuMiwQitUFKal2uW6l1SCsi3a70P0fSEkFxX1zwWIXU0+tm+bJDP85Rdg",
+	"W5Wg1fLFt30kXwme/YAVDBHdCJ75cU00lWNDvMkV5QynI0NNIf2axWlB4L2CXA6RpbZNJE2jJn0CG1yk",
+	"qpyTI7/mPAXMDP1faEbVEOHUvOyIm2ZFhlY3i0WIMsrcv4o2ZQq2IGraH5b+1Ct2XyzCaUO9TTEbRGWu",
+	"X56LzPcgJeXDg0j3/txxbvkxsCp+JlRvuQ9QzTBTyP7OxR0v1KB0Htz786Sz151lzpkEsxi+w+QdfC5A",
+	"GgTHnClg5ifO85TGWE9y/qfkTD+rh/lfARu0Qv8zr03d3L6V8x+F4MIORUDGghpJoRV6ze5xSkkg7IAz",
+	"pK0VZ5uUxlcY/ddCGXpB7IaUwQNVSYC3WwFbrCBI6QbiXZxCIIoUpOHvFRdrSgiwyzP4G1cBLlTCBf0L",
+	"SLDhIlAJlUHCCwkJT4lh6DeuXvGCkcvz8w4kL0QMAeMq2OgxDQO3nP+CxRauwYDBSQBfYgAijeLothBA",
+	"grVmx2ro/1kttMvz9LJQCTDlqAblQnSc5ILHICVep3BNQGOmVbSGwIxiuNmXRsE6HbGi91Tt3mKrt1zw",
+	"HISi1gZQBVn7xzF+fgacquQdxFwQPesMf3lt+5ldxhkcLATe6dcMvqgornySQ7tX27KPjoFPFRW+/hNi",
+	"pck4t8mIkhBqbe/bxjQ2OJUQdmaGba+IEg/bGKIEM2I1d/BK0Qz+4qz/ZcGodfWA6f31I8pACRo3JjIw",
+	"3wZ/1eiNsfoEYeFwoEMoHx8f0Dbro2vV+vcFSGvUgxkQrLAE1as9Svofsy1IBSTCqgUeytS3z9GhCxWi",
+	"HO9SjjU1w7XmJCLOExnZ/6v2d7DzkIKGSzmlVtf2uDVL7en0ye9XeOf8gqlrLNYmj65TiByc/aFSruoW",
+	"SpY9IMH18vekF+Mcr2lKKzb9Z6SdXdnQQuXsh0juWNz/xrlnvf32B/LutwMo7JVmZzJ92tPO+4n607M1",
+	"XdL0zQatPh6X8K3AlFG21QOi/acQsSJN7X6nRAHdiRniQwwzIO5IcFmzrqeh25MIu33Q9WzzfrSnU+/A",
+	"kKOEvM1Aa4tvnc2fLxYLj5EYdwtweletLF+Z5oJyQdWu13S6g5wvrbK5fdFHL+ei33ZLhVXR2npzCyzU",
+	"UB4KkbyjeW6fYhZDmgLp2Z1DZM//vuarBLGCvG3CXvSYMKWdZuVL89a11h2pSqGj0Rc3yzHfoqGEWrVh",
+	"2+UoUWhGKOXcUUhD1/UkKsmXIhtf4/JE++SYma4V26+rmAPN9Ivt+Iy0wqfNAr6AiKmEcoNv6PJm+R+P",
+	"xVkRsOGAw7DdRS2DaJulo+JvtjWr+3MBLIaI8Vb468VISMoiy9uG6LalASltwQMWWZGjWnjGD1Ig7nFq",
+	"XCWpjJ3gKeEPDFkRjXvtJV/tuTV56EjsCJRua6swAU2ESqXtWHSXHdnHWJGtrSRJIcxRMcooKxwKRjsl",
+	"gIWKBFYQlSefUaBoZzO623rRz3EMmqEoBxHdZVGGv5zWjzKvfsKZ9oGGTeCB8mq579NrZ6mcotU6W1At",
+	"kEU4PsFKyxJizohsLbf/fPu8FQRehKPTOw0CA2qdNJMBFU+iIUyIqBtxnyyCEgt+W09D+e9BjZ1rxvDz",
+	"HtRUCD06BBoruiK09JVje/FVUDhHH5YQZY9ASKrHE5OgosPRVAHlMEzgxoOAgiznHiu0F3TFOqUyOeMU",
+	"iUWc0Hsg0ZFDhNcBBK2mHEB9j5vvdyz+PsFsC/5HXd2njLGifdgNKd1RRprOhnMcUYiAKZMJIjwuMmCq",
+	"/6QB4h5EpAMK/jGmznQNCz2kDiXwqSWDD8uJ2gWm7FlvH7rfvn5ZV0rKqc/gBFVhk14RaQ5wuY+WBIpc",
+	"gjmkEDAhk17Z7lgcSfh8ikyrvmEp3pqN5uSHUFYh5iAGOTVqkVJgKipyfUgbREjTxhxaJSsj0h+xKuHZ",
+	"cyTpO146XFdOdvcE4xtXPXPdtIKs3bPF8eNEKypxCBqT7PKamW0aGdvhITffA3y1Gnyjxv3m4PCYfwil",
+	"GhpDOH6LT7ATsTEv/v5SyySNRlASLKOMC+iHs8kj4I0CccqyLzlv0WkMOSimIk2bW+ZjycM3cSIpi+GU",
+	"CTd6hxWfw7OUSaNMYAIiMmcOp8mgse12pZBRVv4dieTUQx+f1pDyHihjIKYx7qm8DqflSH18tvydy4bJ",
+	"BeBJ+a6zY9XAhhNko523HKfDAml1qqU5JcT9qIHHm76sVr3lTNxiRoUjlT64nyzbw7A6EXijTH5K0Xvo",
+	"RNdL5/98Z+zkaPdAgLuMbBuwNIPWVvJh0907Gvl11VmXT1RhQeWxyNEAsBs5LnWg8meKZvC4aapTAorA",
+	"lKATdkMn8x+NW9gJpfSsppSyuxNyfFVYfLRlDiIGc8iFzcZlpEYn7fJRkawzndNsSIfAqWfrKe6tNh5n",
+	"IunQguhonuBbAVJ2zAehMsaCXNd+1M625+Ismw9kKbtbek18JOdWWaLSNpXL5IgZskvi/NCg15L1Puu3",
+	"z4f1+U7VuZaBBEt4kB+bng8b7UFltOZk9wB0m6j+MwSVkcsZ9b5OsQKBU5f29kuGdJykR82gZIWMU4i2",
+	"ghedrPUB2YPDg7/VK+3PcDZulMZI6qWekQuj+rTzzheZtp45ookBBRW5rl5pJcWjDaZpMXSCLSSIKMVr",
+	"SP3CuE17Uy3UblKysSiPGJSy7m+CPZlWFOjGmV4POE0MQ/WBRltxIajavdccueJ3wAKELunV/9bm36sS",
+	"22/082VgC7ICxe+AlRX9Rm+mdW0GE6VyW6VL2caAp7Xy0c9lFXewoYppklJxgbcQYEaCjK9pCoHe6xLB",
+	"Gf3LVva+fPt69gf7AELv/MEyKCTIAAc24PuMPzAgQanuwMrM1I3XNe0dirM/2E9YZJQFth5QkzVEJeRY",
+	"6A5KC1vO/mDVHrVCryzHRPODQnRv+UErdDNbzBYuVMtwTtEKfTNbzL4xlYcqMUKe45zO72/mZTnb/Csl",
+	"+7nz0hyWtjbRVUVaXxO0Qj+Belm3Clv3qAZC93WTeX3Pah+ONq4uOHm0veW+Le3FII+G7srW/lPncsZy",
+	"sXi0MvJWCXhfYbt7H9gCUltb/3yxGKJbMTpvXCExXb4Z71LfqjA9no/3qK496A43HkNU1xSaa98Ap7nq",
+	"P37af9IN+kGamJriOcE03R2D6Q+6gS1A/henZ+K0UYfeg1Ij6cCZMKuefzZgtX2f50WaDuJTR6h1aPIQ",
+	"mX3X1sqIsMcNM58U1EWhchB/7wGMbhO48LbZaVUCgXYxgoRuk2cPWIEIMizurgWfE5QrjXuSc9mrXZk4",
+	"7bprdd9xsntkEdfB//1+38XG/uIabgTp+zSsuL4RZmPoxvuBexC7QBbrjCoFJCgTAVe0ENMWfIieL5fj",
+	"Hdr3yyYgadnZ19yR7lkzwj20t3WKeP+O+1vrAvhFLdJQxXMPbF3ToNRBQJmxTW4VAwmIdseFtlxPzzaN",
+	"IWr+tbrMvZ/r4vthC/b+juZtuV0WY/Ut9CtCoddw2TsJQd5GwuxUp+T/xntUt63PUHVZwfNM8y3nLiE0",
+	"doiDVh7zDAVfWmfH1qydiVFYGHAR6NhE8JAACxhnEFAZWGnMrrv4Ohr5aj/WsD+mk6Y2vtuZbwpccMm5",
+	"T0s8OVN9TNdvmFV0HUuZXeW08OgwmOe2uPOYD2kaPNYK9cfDRfXbU9Latw3bZs4MmxNCmc22TygBpuiG",
+	"gnjqhrl5A3Vo3f9etrmKG1d9I8XbnZvSo/w2zhMJXDQj6T1Ac6+DhErFxe7pu3QlnOZfqy/P7D2gdfnd",
+	"pP5QzjX0ObQ3OKE8ue0hRHnR52XjeyhndFXtPH5MoqWY68UijuDBhSAoe1ZWOJTwuGZQctI2c8GgpI8h",
+	"mZf1H8Neyfeuxb+ovRBqXyqe0Rin6S6oqnH+2bjNjp5jf7Vx8QspqvH9leOfnQISuPUVrDlXUgmcB5TZ",
+	"sHwdP7jxiSc2vpw1SVD+WYcPS7+8Q6tE6oyP/w1Qd+X8Pd9JXIQTMxrheZ9iHLv2fvmMib3Y0beNuUqC",
+	"Z1wQ0BtaXUbgMihPx2utbtBZSBUidTUYcjXXKJ1hQUHOFM1IkfF0FvNM34L77wA8xF3JnFUAAA==",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

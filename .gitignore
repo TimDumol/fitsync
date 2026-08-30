@@ -26,3 +26,10 @@ __pycache__/
 *.key
 *.p12
 *.pfx
+
+# Expo mobile app dependencies and generated output
+apps/mobile/node_modules/
+apps/mobile/.expo/
+apps/mobile/dist/
+apps/mobile/android/
+apps/mobile/ios/

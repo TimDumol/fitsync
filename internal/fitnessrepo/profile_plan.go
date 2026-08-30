@@ -84,44 +84,20 @@ func (r *Repository) Plan(ctx context.Context, athleteID, from, to string, inclu
 	if err := validRange(from, to, 366); err != nil {
 		return PlanResult{}, err
 	}
-	var id, title, goal string
-	err := r.db.QueryRowContext(ctx, "SELECT id,title,goal_raw FROM training_plans WHERE athlete_id=? AND active=1 AND deleted_at IS NULL", athleteID).Scan(&id, &title, &goal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return PlanResult{Sessions: []PlannedSession{}}, nil
+	result, err := r.ActivePlan(ctx, athleteID, true)
+	if err != nil || result.Plan == nil {
+		return result, err
 	}
-	if err != nil {
-		return PlanResult{}, errors.New("internal_error: plan query")
-	}
-	result := PlanResult{Plan: &TrainingPlan{ID: id, Title: title, Goal: json.RawMessage(goal)}, Sessions: []PlannedSession{}}
-	rows, err := r.db.QueryContext(ctx, "SELECT id,session_date,sport,session_type,priority,targets_raw,notes,status,completed_activity_id,completed_workout_id FROM planned_sessions WHERE athlete_id=? AND plan_id=? AND deleted_at IS NULL AND session_date BETWEEN ? AND ? ORDER BY session_date,id", athleteID, id, from, to)
-	if err != nil {
-		return PlanResult{}, errors.New("internal_error: planned session query")
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var sid, date, sport, typ, priority, targets, status string
-		var notes, activity, workout sql.NullString
-		if e := rows.Scan(&sid, &date, &sport, &typ, &priority, &targets, &notes, &status, &activity, &workout); e != nil {
-			return PlanResult{}, errors.New("internal_error: planned session row")
-		}
-		if !includeCompleted && status == "completed" {
+	filtered := make([]PlannedSession, 0, len(result.Sessions))
+	for _, session := range result.Sessions {
+		if session.Date < from || session.Date > to || (!includeCompleted && session.Status == "completed") {
 			continue
 		}
-		var t PlannedTargets
-		_ = json.Unmarshal([]byte(targets), &t)
-		s := PlannedSession{ID: sid, PlanID: id, Date: date, Sport: sport, SessionType: typ, Priority: priority, Targets: t, Status: status}
-		if notes.Valid {
-			s.Notes = &notes.String
-		}
-		if activity.Valid {
-			s.CompletedActivityID = &activity.String
-		}
-		if workout.Valid {
-			s.CompletedWorkoutID = &workout.String
-		}
-		result.Sessions = append(result.Sessions, s)
+		filtered = append(filtered, session)
 	}
-	return result, rows.Err()
+	result.Sessions = filtered
+	result.Plan.Sessions = filtered
+	return result, nil
 }
 
 func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string, in PlannedSessionWrite) (PlannedSessionWinner, error) {
@@ -149,7 +125,7 @@ func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string,
 				return PlannedSessionWinner{}, e
 			}
 			clock := r.now()
-			if _, e := r.db.ExecContext(ctx, "INSERT INTO training_plans(id,athlete_id,title,goal_raw,active,client_updated_at,server_synced_at) VALUES(?,?,?, '{}',1,?,?)", planID, athleteID, "Training plan", in.ClientUpdatedAt, clock); e != nil {
+			if _, e := r.db.ExecContext(ctx, "INSERT INTO training_plans(id,athlete_id,title,goal_raw,status,source,active,client_updated_at,server_synced_at,created_at) VALUES(?,?,?, '{}','active','manual',1,?,?,?)", planID, athleteID, "Training plan", in.ClientUpdatedAt, clock, clock); e != nil {
 				return PlannedSessionWinner{}, normalizeWriteError(e)
 			}
 		} else if err != nil {
@@ -172,6 +148,9 @@ func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string,
 	if err != nil {
 		return PlannedSessionWinner{}, normalizeWriteError(err)
 	}
+	if err := r.bumpPlanSequence(ctx, planID); err != nil {
+		return PlannedSessionWinner{}, err
+	}
 	value, e := r.readPlanned(ctx, athleteID, in.ID)
 	return PlannedSessionWinner{Session: value, Created: created, SubmittedVersionWon: true, ServerSyncedAt: clock}, e
 }
@@ -190,6 +169,23 @@ func (r *Repository) UpdatePlannedSessionStatus(ctx context.Context, athleteID s
 	if owner != athleteID {
 		return PlannedSessionWinner{}, errors.New("not_found: planned session")
 	}
+	if in.Status != "planned" && in.Status != "completed" && in.Status != "skipped" && in.Status != "cancelled" {
+		return PlannedSessionWinner{}, errors.New("invalid_input: planned session status")
+	}
+	if oldStatus, err := r.plannedStatus(ctx, in.ID); err == nil {
+		if oldStatus == "completed" && in.Status != "completed" {
+			return PlannedSessionWinner{}, errors.New("conflict: completed planned sessions are immutable")
+		}
+		if in.Status == "cancelled" {
+			var started int
+			if e := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM workout_sessions WHERE planned_session_id=? AND athlete_id=? AND status IN ('in_progress','completed') AND deleted_at IS NULL", in.ID, athleteID).Scan(&started); e != nil {
+				return PlannedSessionWinner{}, errors.New("internal_error: planned session lifecycle")
+			}
+			if started > 0 {
+				return PlannedSessionWinner{}, errors.New("conflict: started planned sessions cannot be cancelled")
+			}
+		}
+	}
 	if in.ClientUpdatedAt <= old {
 		value, e := r.readPlanned(ctx, athleteID, in.ID)
 		return PlannedSessionWinner{Session: value, SubmittedVersionWon: false}, e
@@ -206,7 +202,8 @@ func (r *Repository) UpdatePlannedSessionStatus(ctx context.Context, athleteID s
 			activity = *in.ActivityID
 		}
 		if in.WorkoutID != nil {
-			if !r.ownedWorkout(ctx, athleteID, *in.WorkoutID) {
+			var workoutStatus string
+			if err := r.db.QueryRowContext(ctx, "SELECT status FROM workout_sessions WHERE athlete_id=? AND id=? AND deleted_at IS NULL", athleteID, *in.WorkoutID).Scan(&workoutStatus); err != nil || workoutStatus != "completed" {
 				return PlannedSessionWinner{}, errors.New("not_found: completed workout")
 			}
 			workout = *in.WorkoutID
@@ -221,29 +218,28 @@ func (r *Repository) UpdatePlannedSessionStatus(ctx context.Context, athleteID s
 	if err != nil {
 		return PlannedSessionWinner{}, normalizeWriteError(err)
 	}
+	if err := r.bumpPlanSequence(ctx, planID); err != nil {
+		return PlannedSessionWinner{}, err
+	}
 	value, e := r.readPlanned(ctx, athleteID, in.ID)
 	return PlannedSessionWinner{Session: value, SubmittedVersionWon: true, ServerSyncedAt: clock}, e
 }
 
+func (r *Repository) plannedStatus(ctx context.Context, id string) (string, error) {
+	var status string
+	err := r.db.QueryRowContext(ctx, "SELECT status FROM planned_sessions WHERE id=?", id).Scan(&status)
+	return status, err
+}
+
 func (r *Repository) readPlanned(ctx context.Context, athleteID, id string) (PlannedSession, error) {
-	var planID, date, sport, typ, priority, targets, status string
-	var notes, activity, workout sql.NullString
-	if err := r.db.QueryRowContext(ctx, "SELECT plan_id,session_date,sport,session_type,priority,targets_raw,notes,status,completed_activity_id,completed_workout_id FROM planned_sessions WHERE id=? AND athlete_id=?", id, athleteID).Scan(&planID, &date, &sport, &typ, &priority, &targets, &notes, &status, &activity, &workout); err != nil {
+	value, err := loadPlannedSession(ctx, r.db, athleteID, id, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PlannedSession{}, errors.New("not_found: planned session")
+	}
+	if err != nil {
 		return PlannedSession{}, errors.New("internal_error: planned session read")
 	}
-	var t PlannedTargets
-	_ = json.Unmarshal([]byte(targets), &t)
-	v := PlannedSession{ID: id, PlanID: planID, Date: date, Sport: sport, SessionType: typ, Priority: priority, Targets: t, Status: status}
-	if notes.Valid {
-		v.Notes = &notes.String
-	}
-	if activity.Valid {
-		v.CompletedActivityID = &activity.String
-	}
-	if workout.Valid {
-		v.CompletedWorkoutID = &workout.String
-	}
-	return v, nil
+	return value, nil
 }
 
 func (r *Repository) ownedActivity(ctx context.Context, athleteID, id string) bool {

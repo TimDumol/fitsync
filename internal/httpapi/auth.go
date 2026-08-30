@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 
 	fitnessauth "github.com/timdumol/fitsync/internal/auth"
 )
@@ -53,7 +54,8 @@ func (a PocketIDAuthorizer) Authorize(r *http.Request, athleteID string) error {
 		return errors.New("OIDC authorization is unavailable")
 	}
 	required := "fitness:read"
-	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sync/push" {
+	if (r.Method == http.MethodPost || r.Method == http.MethodPut) &&
+		(strings.HasPrefix(r.URL.Path, "/api/v2/") || r.URL.Path == "/api/v1/sync/push") {
 		required = "fitness:write"
 	}
 	principal, err := a.Authenticator.Authenticate(r, required)

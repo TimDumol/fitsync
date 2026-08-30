@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,9 @@ from garmin_sync import (
 
 
 class _Response:
+    def __init__(self, payload: bytes = b'{"records":2,"archives":0}'):
+        self.payload = payload
+
     def __enter__(self):
         return self
 
@@ -18,7 +22,7 @@ class _Response:
         return False
 
     def read(self):
-        return b'{"records":2,"archives":0}'
+        return self.payload
 
 
 class FitnessdIngestTests(unittest.TestCase):
@@ -76,6 +80,32 @@ class FitnessdIngestTests(unittest.TestCase):
             self.assertEqual(calls[0], calls[1])
             self.assertEqual(delays, [1.0])
             self.assertIn(b'"payload_raw":{"hrv":{},"resting_heart_rate":{},"sleep":{"raw":1}}', calls[0])
+
+    def test_upload_splits_cached_records_at_server_batch_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "raw" / "sleep"
+            root.mkdir(parents=True)
+            for index in range(101):
+                (root / f"record-{index}.json").write_bytes(
+                    _canonical_json_bytes({"sleep": {"index": index}})
+                )
+            batch_sizes: list[int] = []
+
+            def opener(request, timeout):
+                self.assertEqual(timeout, 30)
+                size = request.data.count(b'"dataset":"sleep"')
+                batch_sizes.append(size)
+                return _Response(json.dumps({"records": size, "archives": 0}).encode())
+
+            result = upload_raw_to_fitnessd(
+                Path(directory),
+                {"FITNESS_API_URL": "https://fitnessd.example", "FITNESS_INGEST_TOKEN": "secret"},
+                urlopen_fn=opener,
+                sleep_fn=lambda _delay: None,
+            )
+
+            self.assertEqual(batch_sizes, [100, 1])
+            self.assertEqual(result, {"records": 101, "archives": 0})
 
 
 if __name__ == "__main__":

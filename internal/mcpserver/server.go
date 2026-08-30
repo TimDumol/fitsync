@@ -162,6 +162,8 @@ type PlanInput struct {
 	TargetAthleteID  string `json:"target_athlete_id,omitempty"`
 	From             string `json:"from"`
 	To               string `json:"to"`
+	PlanID           string `json:"plan_id,omitempty"`
+	IncludeSteps     *bool  `json:"include_steps,omitempty"`
 	IncludeCompleted *bool  `json:"include_completed,omitempty"`
 }
 type PlannedSessionInput struct {
@@ -175,6 +177,46 @@ type PlannedSessionInput struct {
 	Priority        string                     `json:"priority"`
 	Targets         fitnessrepo.PlannedTargets `json:"targets,omitempty"`
 	Notes           *string                    `json:"notes,omitempty"`
+	Title           string                     `json:"title,omitempty"`
+	Description     string                     `json:"description,omitempty"`
+	Steps           []fitnessrepo.PlannedStep  `json:"steps,omitempty"`
+}
+type PlanDraftInput struct {
+	TargetAthleteID string                  `json:"target_athlete_id,omitempty"`
+	PlanID          string                  `json:"plan_id"`
+	Title           string                  `json:"title"`
+	Description     *string                 `json:"description,omitempty"`
+	Goal            json.RawMessage         `json:"goal,omitempty"`
+	StartDate       *string                 `json:"start_date,omitempty"`
+	EndDate         *string                 `json:"end_date,omitempty"`
+	SourceRef       *string                 `json:"source_ref,omitempty"`
+	Sessions        []PlanDraftSessionInput `json:"sessions"`
+}
+type PlanDraftSessionInput struct {
+	SessionID   string                     `json:"session_id"`
+	Date        string                     `json:"date"`
+	Title       string                     `json:"title"`
+	Description *string                    `json:"description,omitempty"`
+	Sport       string                     `json:"sport"`
+	SessionType string                     `json:"session_type"`
+	Priority    string                     `json:"priority"`
+	Targets     fitnessrepo.PlannedTargets `json:"targets,omitempty"`
+	Notes       *string                    `json:"notes,omitempty"`
+	Steps       []fitnessrepo.PlannedStep  `json:"steps"`
+}
+type PlanDraftOutput struct {
+	Plan         fitnessrepo.PlanResult `json:"plan"`
+	SessionCount int                    `json:"session_count"`
+	StepCount    int                    `json:"step_count"`
+	SyncSeq      int64                  `json:"sync_seq"`
+}
+type PublishPlanInput struct {
+	TargetAthleteID string `json:"target_athlete_id,omitempty"`
+	PlanID          string `json:"plan_id"`
+}
+type WorkoutInput struct {
+	TargetAthleteID string `json:"target_athlete_id,omitempty"`
+	WorkoutID       string `json:"workout_id"`
 }
 type PlannedStatusInput struct {
 	TargetAthleteID     string  `json:"target_athlete_id,omitempty"`
@@ -228,6 +270,9 @@ func NewWithClock(api *httpapi.API, authenticator *fitnessauth.Authenticator, cl
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_athlete_profile", Description: "Read the editable athlete goals, zones, preferences, and constraints.", Annotations: readAnnotations(), InputSchema: targetOnlySchema()}, s.profile)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_athlete_profile", Description: "Replace the editable athlete profile atomically.", Annotations: writeAnnotations(false), InputSchema: profileSchema()}, s.updateProfile)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_plan", Description: "Read the active training plan and planned sessions.", Annotations: readAnnotations(), InputSchema: planSchema()}, s.plan)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_training_plan_draft", Description: "Atomically create or replace one complete draft training plan.", Annotations: writeAnnotations(false), InputSchema: planDraftSchema()}, s.upsertPlanDraft)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "publish_training_plan", Description: "Publish a draft training plan and archive the previous active plan.", Annotations: writeAnnotations(true), InputSchema: publishPlanSchema()}, s.publishPlan)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_workout", Description: "Read one authorized workout with prescribed-versus-actual details.", Annotations: readAnnotations(), InputSchema: workoutSchema()}, s.workout)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_planned_session", Description: "Create or replace one planned training session.", Annotations: writeAnnotations(false), InputSchema: plannedSessionSchema()}, s.upsertPlannedSession)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_planned_session_status", Description: "Update planned-session status and owned completion links.", Annotations: writeAnnotations(true), InputSchema: plannedStatusSchema()}, s.updatePlannedStatus)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_analysis", Description: "Calculate bounded deterministic period and comparison aggregates.", Annotations: readAnnotations(), InputSchema: analysisSchema()}, s.analysis)
@@ -412,8 +457,63 @@ func (s *Server) plan(ctx context.Context, _ *mcp.CallToolRequest, in PlanInput)
 	if in.IncludeCompleted != nil {
 		include = *in.IncludeCompleted
 	}
+	if in.PlanID != "" {
+		includeSteps := true
+		if in.IncludeSteps != nil {
+			includeSteps = *in.IncludeSteps
+		}
+		value, err := s.repo.PlanByID(ctx, id, in.PlanID, includeSteps)
+		return nil, value, err
+	}
 	value, err := s.repo.Plan(ctx, id, in.From, in.To, include)
 	return nil, value, err
+}
+
+func (s *Server) upsertPlanDraft(ctx context.Context, _ *mcp.CallToolRequest, in PlanDraftInput) (*mcp.CallToolResult, PlanDraftOutput, error) {
+	_, id, err := s.principal(ctx, in.TargetAthleteID, "fitness:write")
+	if err != nil {
+		return nil, PlanDraftOutput{}, err
+	}
+	sessions := make([]fitnessrepo.PlannedSessionWrite, 0, len(in.Sessions))
+	steps := 0
+	for _, input := range in.Sessions {
+		sessions = append(sessions, fitnessrepo.PlannedSessionWrite{ID: input.SessionID, PlanID: in.PlanID, Date: input.Date, Title: input.Title, Description: derefString(input.Description), Sport: input.Sport, SessionType: input.SessionType, Priority: input.Priority, Targets: input.Targets, Notes: input.Notes, Steps: input.Steps})
+		steps += len(input.Steps)
+	}
+	value, err := s.repo.UpsertPlanDraft(ctx, id, fitnessrepo.PlanWrite{Plan: fitnessrepo.TrainingPlan{ID: in.PlanID, Title: in.Title, Description: in.Description, Goal: in.Goal, StartDate: in.StartDate, EndDate: in.EndDate, SourceRef: in.SourceRef}, Sessions: sessions})
+	if err != nil {
+		return nil, PlanDraftOutput{}, err
+	}
+	seq := int64(0)
+	if value.Plan != nil {
+		seq = value.Plan.SyncSeq
+	}
+	return nil, PlanDraftOutput{Plan: value, SessionCount: len(value.Sessions), StepCount: steps, SyncSeq: seq}, nil
+}
+
+func (s *Server) publishPlan(ctx context.Context, _ *mcp.CallToolRequest, in PublishPlanInput) (*mcp.CallToolResult, fitnessrepo.PlanPublishResult, error) {
+	_, id, err := s.principal(ctx, in.TargetAthleteID, "fitness:write")
+	if err != nil {
+		return nil, fitnessrepo.PlanPublishResult{}, err
+	}
+	value, err := s.repo.PublishPlan(ctx, id, in.PlanID)
+	return nil, value, err
+}
+
+func (s *Server) workout(ctx context.Context, _ *mcp.CallToolRequest, in WorkoutInput) (*mcp.CallToolResult, fitnessrepo.StrengthWorkout, error) {
+	_, id, err := s.principal(ctx, in.TargetAthleteID, "fitness:read")
+	if err != nil {
+		return nil, fitnessrepo.StrengthWorkout{}, err
+	}
+	value, err := s.repo.Workout(ctx, id, in.WorkoutID)
+	return nil, value, err
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 func (s *Server) upsertPlannedSession(ctx context.Context, _ *mcp.CallToolRequest, in PlannedSessionInput) (*mcp.CallToolResult, fitnessrepo.PlannedSessionWinner, error) {
 	_, id, e := s.principal(ctx, in.TargetAthleteID, "fitness:write")

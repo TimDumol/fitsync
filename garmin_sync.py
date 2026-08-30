@@ -663,12 +663,22 @@ def _raw_ingest_records(output_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _multipart_body(output_dir: Path) -> tuple[bytes, str]:
+FITNESSD_MAX_BATCH_RECORDS = 100
+
+
+def _multipart_body(
+    output_dir: Path,
+    records: list[dict[str, Any]] | None = None,
+    archive_paths: list[Path] | None = None,
+) -> tuple[bytes, str]:
     boundary = "----fitsync-" + uuid.uuid4().hex
-    records = _raw_ingest_records(output_dir)
+    if records is None:
+        records = _raw_ingest_records(output_dir)
+    if archive_paths is None:
+        archive_paths = sorted((output_dir / "activity_originals").glob("*.zip"))
     archives: list[dict[str, str]] = []
     file_parts: list[tuple[str, Path]] = []
-    for path in sorted((output_dir / "activity_originals").glob("*.zip")):
+    for path in archive_paths:
         upload_id = uuid.uuid4().hex
         archives.append(
             {
@@ -705,6 +715,30 @@ def _multipart_body(output_dir: Path) -> tuple[bytes, str]:
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
+def _fitnessd_batches(
+    records: list[dict[str, Any]], archive_paths: list[Path]
+) -> list[tuple[list[dict[str, Any]], list[Path]]]:
+    """Split records into server-sized batches and keep archives with activities."""
+    if not records:
+        raise NeonSyncError("No raw Garmin JSON exports found to upload to fitnessd")
+
+    batches = [
+        records[offset : offset + FITNESSD_MAX_BATCH_RECORDS]
+        for offset in range(0, len(records), FITNESSD_MAX_BATCH_RECORDS)
+    ]
+    activity_batch: dict[str, int] = {}
+    for batch_index, batch in enumerate(batches):
+        for record in batch:
+            if record.get("dataset") == "activities":
+                activity_batch[str(record.get("record_key"))] = batch_index
+
+    archives_by_batch: list[list[Path]] = [[] for _ in batches]
+    for path in archive_paths:
+        batch_index = activity_batch.get(path.stem, 0)
+        archives_by_batch[batch_index].append(path)
+    return list(zip(batches, archives_by_batch))
+
+
 def upload_raw_to_fitnessd(
     output_dir: Path,
     environ: dict[str, str] | None = None,
@@ -725,34 +759,43 @@ def upload_raw_to_fitnessd(
             raise NeonSyncError("Could not read FITNESS_INGEST_TOKEN_FILE") from exc
     if not base_url or not token:
         raise NeonSyncError("Set FITNESS_API_URL and FITNESS_INGEST_TOKEN for fitnessd upload")
-    body, content_type = _multipart_body(output_dir)
-    request = Request(
-        base_url.rstrip("/") + "/api/v1/ingest/garmin/batch",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": content_type,
-            "Accept": "application/json",
-        },
-    )
-    last_error: Exception | None = None
-    for attempt in range(4):
-        try:
-            with urlopen_fn(request, timeout=30) as response:
-                result = json.loads(response.read().decode("utf-8"))
-            if not isinstance(result, dict):
-                raise NeonSyncError("fitnessd returned invalid JSON")
-            return result
-        except HTTPError as exc:
-            last_error = exc
-            if exc.code not in {429, 500, 502, 503, 504}:
-                raise NeonSyncError(f"fitnessd upload returned HTTP {exc.code}") from exc
-        except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            last_error = exc
-        if attempt < 3:
-            sleep_fn(min(8.0, 2.0**attempt))
-    raise NeonSyncError("fitnessd upload failed after retries") from last_error
+    records = _raw_ingest_records(output_dir)
+    archive_paths = sorted((output_dir / "activity_originals").glob("*.zip"))
+    total_records = 0
+    total_archives = 0
+    for batch_records, batch_archives in _fitnessd_batches(records, archive_paths):
+        body, content_type = _multipart_body(output_dir, batch_records, batch_archives)
+        request = Request(
+            base_url.rstrip("/") + "/api/v1/ingest/garmin/batch",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": content_type,
+                "Accept": "application/json",
+            },
+        )
+        last_error: Exception | None = None
+        for attempt in range(4):
+            try:
+                with urlopen_fn(request, timeout=30) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                if not isinstance(result, dict):
+                    raise NeonSyncError("fitnessd returned invalid JSON")
+                total_records += int(result.get("records", 0))
+                total_archives += int(result.get("archives", 0))
+                break
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code not in {429, 500, 502, 503, 504}:
+                    raise NeonSyncError(f"fitnessd upload returned HTTP {exc.code}") from exc
+            except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+            if attempt < 3:
+                sleep_fn(min(8.0, 2.0**attempt))
+        else:
+            raise NeonSyncError("fitnessd upload failed after retries") from last_error
+    return {"records": total_records, "archives": total_archives}
 
 
 def parse_args() -> argparse.Namespace:
@@ -800,6 +843,11 @@ def parse_args() -> argparse.Namespace:
         help="Upload existing curated exports to Neon without contacting Garmin.",
     )
     parser.add_argument(
+        "--fitnessd-only",
+        action="store_true",
+        help="Upload existing raw Garmin exports to fitnessd without contacting Garmin.",
+    )
+    parser.add_argument(
         "--fitnessd",
         action="store_true",
         help="Upload cached raw Garmin responses to fitnessd using FITNESS_API_URL and FITNESS_INGEST_TOKEN.",
@@ -826,6 +874,12 @@ def main() -> int:
     if args.activities_only and args.sleep_only:
         print("Choose at most one of --activities-only and --sleep-only", file=sys.stderr)
         return 2
+    if args.neon_only and args.fitnessd_only:
+        print("Choose at most one of --neon-only and --fitnessd-only", file=sys.stderr)
+        return 2
+    if args.fitnessd_only and args.neon:
+        print("--fitnessd-only cannot be combined with --neon", file=sys.stderr)
+        return 2
 
     if args.neon_only:
         try:
@@ -833,6 +887,18 @@ def main() -> int:
             return 0
         except NeonSyncError as exc:
             print(f"Neon sync failed: {exc}", file=sys.stderr)
+            return 1
+
+    if args.fitnessd_only:
+        try:
+            result = upload_raw_to_fitnessd(args.output_dir)
+            print(
+                f"fitnessd: uploaded {result.get('records', 0)} raw record(s) and "
+                f"{result.get('archives', 0)} archive(s)"
+            )
+            return 0
+        except NeonSyncError as exc:
+            print(f"fitnessd sync failed: {exc}", file=sys.stderr)
             return 1
 
     start = args.end_date - timedelta(days=args.days - 1)

@@ -4,9 +4,8 @@ info:
   version: 1.0.0
   description: |
     Household fitness storage and mobile synchronization API.
-    The mobile sync timestamp cursor assumes one mobile device per athlete and
-    negligible concurrent workout writes; replace it with a sequence cursor if
-    those assumptions change. Garmin ingestion uses separate tables.
+    Version 2 uses a server-owned sequence cursor for aggregate synchronization.
+    Garmin ingestion uses separate tables.
 servers:
   - url: https://api.aries.timdumol.com
 paths:
@@ -91,6 +90,193 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '413': { $ref: '#/components/responses/TooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+  /api/v2/me:
+    get:
+      operationId: getMe
+      security: [{BearerAuth: []}]
+      responses:
+        '200':
+          description: Authenticated athlete bootstrap information.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v2/athletes/{id}/training-plans/active:
+    get:
+      operationId: getActiveTrainingPlan
+      security: [{BearerAuth: []}]
+      parameters: [{ $ref: '#/components/parameters/AthleteID' }]
+      responses:
+        '200':
+          description: Active plan, or null when none is active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v2/athletes/{id}/training-plans/{planId}:
+    get:
+      operationId: getTrainingPlanById
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/PlanID'
+        - $ref: '#/components/parameters/IncludeSteps'
+      responses:
+        '200':
+          description: One plan aggregate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v2/athletes/{id}/planned-sessions:
+    get:
+      operationId: getPlannedSessions
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/IncludeSteps'
+      responses:
+        '200':
+          description: Planned sessions in the requested date range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlannedSessionsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v2/athletes/{id}/training-plans/{planId}/publish:
+    post:
+      operationId: publishTrainingPlan
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/PlanID'
+      responses:
+        '200':
+          description: Published plan and archived plan identifier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublishPlanResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v2/athletes/{id}/planned-sessions/{sessionId}/skip:
+    post:
+      operationId: skipPlannedSession
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: Skipped planned session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlannedSession' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v2/athletes/{id}/workouts:
+    get:
+      operationId: getWorkouts
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/FromDateOptional'
+        - $ref: '#/components/parameters/ToDateOptional'
+        - $ref: '#/components/parameters/LimitV2'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Workout history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkoutPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v2/athletes/{id}/workouts/{workoutId}:
+    get:
+      operationId: getWorkoutById
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/WorkoutID'
+      responses:
+        '200':
+          description: One workout aggregate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: saveWorkout
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/WorkoutID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Workout' }
+      responses:
+        '200':
+          description: Stored in-progress workout.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /api/v2/athletes/{id}/workouts/{workoutId}/complete:
+    post:
+      operationId: completeWorkout
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/WorkoutID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Workout' }
+      responses:
+        '200':
+          description: Atomically completed workout.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /api/v2/sync/pull:
+    get:
+      operationId: pullSyncV2
+      security: [{BearerAuth: []}]
+      parameters:
+        - name: athlete_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: after
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 50 }
+      responses:
+        '200':
+          description: Sequence-ordered aggregate changes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncPageV2' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 components:
   securitySchemes:
     BearerAuth:
@@ -123,6 +309,41 @@ components:
       in: query
       required: false
       schema: { type: string, maxLength: 256 }
+    PlanID:
+      name: planId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionID:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkoutID:
+      name: workoutId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IncludeSteps:
+      name: include_steps
+      in: query
+      required: false
+      schema: { type: boolean, default: true }
+    FromDateOptional:
+      name: from
+      in: query
+      required: false
+      schema: { type: string, format: date }
+    ToDateOptional:
+      name: to
+      in: query
+      required: false
+      schema: { type: string, format: date }
+    LimitV2:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
   responses:
     BadRequest:
       description: Invalid request.
@@ -131,6 +352,16 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
       description: Not authorized for this household.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Authentication required.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Mutation conflicts with aggregate lifecycle rules.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -236,3 +467,230 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/SyncChange' }
+    MeResponse:
+      type: object
+      required: [athlete, accessible_athletes, capabilities]
+      additionalProperties: false
+      properties:
+        athlete: { $ref: '#/components/schemas/Athlete' }
+        accessible_athletes:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/Athlete' }
+        capabilities:
+          type: object
+          additionalProperties: false
+          properties:
+            plans: { type: boolean }
+            workouts: { type: boolean }
+            sync: { type: boolean }
+    Athlete:
+      type: object
+      required: [athlete_id, handle, timezone]
+      additionalProperties: false
+      properties:
+        athlete_id: { type: string, format: uuid }
+        handle: { type: string }
+        timezone: { type: string }
+        units: { type: string, enum: [metric] }
+    PlanResponse:
+      type: object
+      required: [plan]
+      additionalProperties: false
+      properties:
+        plan:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TrainingPlan' }]
+    PublishPlanResponse:
+      type: object
+      required: [plan]
+      additionalProperties: false
+      properties:
+        plan: { $ref: '#/components/schemas/TrainingPlan' }
+        archived_plan_id: { type: string, format: uuid, nullable: true }
+    PlannedSessionsResponse:
+      type: object
+      required: [sessions]
+      additionalProperties: false
+      properties:
+        sessions:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/PlannedSession' }
+    TrainingPlan:
+      type: object
+      required: [plan_id, athlete_id, title, goal, status, source, sync_seq, sessions]
+      additionalProperties: false
+      properties:
+        plan_id: { type: string, format: uuid }
+        athlete_id: { type: string, format: uuid }
+        title: { type: string, maxLength: 512 }
+        description: { type: string, nullable: true, maxLength: 4000 }
+        goal: { type: object, additionalProperties: true }
+        status: { type: string, enum: [draft, active, completed, archived] }
+        start_date: { type: string, format: date, nullable: true }
+        end_date: { type: string, format: date, nullable: true }
+        source: { type: string }
+        source_ref: { type: string, nullable: true, maxLength: 512 }
+        created_at: { type: integer, format: int64 }
+        sync_seq: { type: integer, format: int64 }
+        sessions:
+          type: array
+          maxItems: 120
+          items: { $ref: '#/components/schemas/PlannedSession' }
+    PlannedTargets:
+      type: object
+      additionalProperties: false
+      properties:
+        duration_minutes: { type: number, nullable: true }
+        distance_km: { type: number, nullable: true }
+        heart_rate_zone: { type: string, nullable: true }
+        pace_min_per_km_min: { type: number, nullable: true }
+        pace_min_per_km_max: { type: number, nullable: true }
+        sets: { type: integer, nullable: true }
+        reps: { type: integer, nullable: true }
+        load_kg: { type: number, nullable: true }
+    PlannedSession:
+      type: object
+      required: [session_id, plan_id, athlete_id, date, title, sport, session_type, priority, targets, status, steps]
+      additionalProperties: false
+      properties:
+        session_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        athlete_id: { type: string, format: uuid }
+        date: { type: string, format: date }
+        title: { type: string, maxLength: 512 }
+        description: { type: string, nullable: true, maxLength: 4000 }
+        sport: { type: string }
+        session_type: { type: string }
+        priority: { type: string }
+        targets: { $ref: '#/components/schemas/PlannedTargets' }
+        notes: { type: string, nullable: true, maxLength: 4000 }
+        status: { type: string, enum: [planned, completed, skipped, cancelled] }
+        completed_activity_id: { type: string, nullable: true }
+        completed_workout_id: { type: string, format: uuid, nullable: true }
+        steps:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PlannedStep' }
+    PlannedStep:
+      type: object
+      required: [step_id, sequence_no, step_type, prescription]
+      additionalProperties: false
+      properties:
+        step_id: { type: string, format: uuid }
+        sequence_no: { type: integer, minimum: 1, maximum: 50 }
+        step_type: { type: string, enum: [warmup, exercise, interval, rest, cooldown, note] }
+        exercise_key: { type: string, nullable: true, maxLength: 128 }
+        exercise_name: { type: string, nullable: true, maxLength: 256 }
+        prescription: { $ref: '#/components/schemas/Prescription' }
+        notes: { type: string, nullable: true, maxLength: 4000 }
+    Prescription:
+      type: object
+      additionalProperties: false
+      properties:
+        sets:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PrescriptionSet' }
+        rounds: { type: integer, nullable: true, minimum: 0, maximum: 1000 }
+        distance_meters: { type: number, nullable: true, minimum: 0 }
+        duration_seconds: { type: integer, nullable: true, minimum: 0, maximum: 86400 }
+        pace_min_per_km_min: { type: number, nullable: true, minimum: 0 }
+        pace_min_per_km_max: { type: number, nullable: true, minimum: 0 }
+        heart_rate_zone: { type: string, nullable: true }
+    PrescriptionSet:
+      type: object
+      additionalProperties: false
+      properties:
+        reps_min: { type: integer, nullable: true, minimum: 0, maximum: 1000 }
+        reps_max: { type: integer, nullable: true, minimum: 0, maximum: 1000 }
+        load_kg: { type: number, nullable: true, minimum: 0, maximum: 2000 }
+        rir: { type: number, nullable: true, minimum: 0, maximum: 10 }
+        rpe: { type: number, nullable: true, minimum: 1, maximum: 10 }
+        duration_seconds: { type: integer, nullable: true, minimum: 0, maximum: 86400 }
+        rest_seconds: { type: integer, nullable: true, minimum: 0, maximum: 86400 }
+        tempo: { type: string, nullable: true }
+    Workout:
+      type: object
+      required: [workout_id, athlete_id, date, title, source, status, entries]
+      additionalProperties: false
+      properties:
+        workout_id: { type: string, format: uuid }
+        athlete_id: { type: string, format: uuid }
+        planned_session_id: { type: string, format: uuid, nullable: true }
+        date: { type: string, format: date }
+        title: { type: string, maxLength: 512 }
+        source: { type: string, maxLength: 128 }
+        workout_type: { type: string }
+        status: { type: string, enum: [in_progress, completed, discarded] }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        duration_minutes: { type: number, nullable: true }
+        perceived_effort: { type: number, nullable: true }
+        notes: { type: string, nullable: true }
+        linked_activity_id: { type: string, nullable: true }
+        sync_seq: { type: integer, format: int64 }
+        entries:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/WorkoutEntry' }
+        planned_session: { $ref: '#/components/schemas/PlannedSession' }
+        comparison: { type: object, additionalProperties: true }
+    WorkoutEntry:
+      type: object
+      required: [entry_id, sequence_no, entry_type]
+      additionalProperties: false
+      properties:
+        entry_id: { type: string, format: uuid }
+        planned_step_id: { type: string, format: uuid, nullable: true }
+        sequence_no: { type: integer, minimum: 1 }
+        entry_type: { type: string, enum: [set, rest, note] }
+        exercise_key: { type: string, nullable: true }
+        exercise_name: { type: string, nullable: true }
+        user_label: { type: string, nullable: true }
+        set_number: { type: integer, nullable: true }
+        reps: { type: number, nullable: true }
+        duration_seconds: { type: number, nullable: true }
+        load_kg: { type: number, nullable: true }
+        load_description: { type: string, nullable: true }
+        is_bodyweight: { type: boolean }
+        to_failure: { type: boolean }
+        rir: { type: number, nullable: true }
+        rir_min: { type: number, nullable: true }
+        rir_max: { type: number, nullable: true }
+        laterality: { type: string, nullable: true }
+        muscle_groups: { type: array, items: { type: string } }
+        notes: { type: string, nullable: true }
+        is_warmup: { type: boolean }
+    WorkoutPage:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Workout' }
+        next_cursor: { type: string, nullable: true }
+    SyncChangeV2:
+      type: object
+      required: [sync_seq, kind, operation, entity_id]
+      additionalProperties: false
+      properties:
+        sync_seq: { type: integer, format: int64 }
+        kind: { type: string, enum: [training_plan, workout] }
+        operation: { type: string, enum: [upsert, delete] }
+        entity_id: { type: string, format: uuid }
+        entity: {}
+    SyncPageV2:
+      type: object
+      required: [changes, next_after, has_more]
+      additionalProperties: false
+      properties:
+        changes:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/SyncChangeV2' }
+        next_after: { type: integer, format: int64 }
+        has_more: { type: boolean }

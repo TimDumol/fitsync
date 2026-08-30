@@ -89,22 +89,30 @@ type StrengthQuery struct {
 }
 
 type StrengthWorkout struct {
-	WorkoutID        string          `json:"workout_id"`
-	Date             string          `json:"date"`
-	Title            string          `json:"title"`
-	Source           string          `json:"source"`
-	WorkoutType      string          `json:"workout_type,omitempty"`
-	StartedAt        *string         `json:"started_at,omitempty"`
-	DurationMinutes  *float64        `json:"duration_minutes,omitempty"`
-	PerceivedEffort  *float64        `json:"perceived_effort,omitempty"`
-	Notes            *string         `json:"notes,omitempty"`
-	LinkedActivityID *string         `json:"linked_activity_id,omitempty"`
-	Entries          []StrengthEntry `json:"entries,omitempty"`
-	Summary          StrengthSummary `json:"summary"`
+	WorkoutID        string             `json:"workout_id"`
+	AthleteID        string             `json:"athlete_id,omitempty"`
+	PlannedSessionID *string            `json:"planned_session_id,omitempty"`
+	Date             string             `json:"date"`
+	Title            string             `json:"title"`
+	Source           string             `json:"source"`
+	WorkoutType      string             `json:"workout_type,omitempty"`
+	Status           string             `json:"status,omitempty"`
+	StartedAt        *string            `json:"started_at,omitempty"`
+	CompletedAt      *string            `json:"completed_at,omitempty"`
+	DurationMinutes  *float64           `json:"duration_minutes,omitempty"`
+	PerceivedEffort  *float64           `json:"perceived_effort,omitempty"`
+	Notes            *string            `json:"notes,omitempty"`
+	LinkedActivityID *string            `json:"linked_activity_id,omitempty"`
+	Entries          []StrengthEntry    `json:"entries,omitempty"`
+	Summary          StrengthSummary    `json:"summary"`
+	PlannedSession   *PlannedSession    `json:"planned_session,omitempty"`
+	Comparison       *WorkoutComparison `json:"comparison,omitempty"`
+	SyncSeq          int64              `json:"sync_seq,omitempty"`
 }
 
 type StrengthEntry struct {
 	EntryID         string   `json:"entry_id"`
+	PlannedStepID   *string  `json:"planned_step_id,omitempty"`
 	SequenceNo      int      `json:"sequence_no"`
 	EntryType       string   `json:"entry_type"`
 	ExerciseKey     *string  `json:"exercise_key,omitempty"`
@@ -137,7 +145,10 @@ type WorkoutWrite struct {
 	ID                               string
 	ClientUpdatedAt                  int64
 	Date, Title, WorkoutType, Source string
+	PlannedSessionID                 *string
+	Status                           string
 	StartedAt                        *time.Time
+	CompletedAt                      *time.Time
 	DurationMinutes                  *float64
 	PerceivedEffort                  *float64
 	Notes                            *string
@@ -259,14 +270,27 @@ type PlanResult struct {
 	Sessions []PlannedSession `json:"sessions"`
 }
 type TrainingPlan struct {
-	ID    string          `json:"plan_id"`
-	Title string          `json:"title"`
-	Goal  json.RawMessage `json:"goal"`
+	ID          string           `json:"plan_id"`
+	AthleteID   string           `json:"athlete_id,omitempty"`
+	Title       string           `json:"title"`
+	Description *string          `json:"description,omitempty"`
+	Goal        json.RawMessage  `json:"goal"`
+	Status      string           `json:"status"`
+	StartDate   *string          `json:"start_date,omitempty"`
+	EndDate     *string          `json:"end_date,omitempty"`
+	Source      string           `json:"source"`
+	SourceRef   *string          `json:"source_ref,omitempty"`
+	CreatedAt   int64            `json:"created_at,omitempty"`
+	SyncSeq     int64            `json:"sync_seq"`
+	Sessions    []PlannedSession `json:"sessions,omitempty"`
 }
 type PlannedSession struct {
 	ID                  string              `json:"session_id"`
 	PlanID              string              `json:"plan_id"`
+	AthleteID           string              `json:"athlete_id,omitempty"`
 	Date                string              `json:"date"`
+	Title               string              `json:"title"`
+	Description         *string             `json:"description,omitempty"`
 	Sport               string              `json:"sport"`
 	SessionType         string              `json:"session_type"`
 	Priority            string              `json:"priority"`
@@ -276,6 +300,56 @@ type PlannedSession struct {
 	CompletedActivityID *string             `json:"completed_activity_id,omitempty"`
 	CompletedWorkoutID  *string             `json:"completed_workout_id,omitempty"`
 	Completion          *ActivityCompletion `json:"completion,omitempty"`
+	Steps               []PlannedStep       `json:"steps,omitempty"`
+}
+
+type PlannedStep struct {
+	ID               string          `json:"step_id"`
+	PlannedSessionID string          `json:"planned_session_id,omitempty"`
+	AthleteID        string          `json:"athlete_id,omitempty"`
+	SequenceNo       int             `json:"sequence_no"`
+	StepType         string          `json:"step_type"`
+	ExerciseKey      *string         `json:"exercise_key,omitempty"`
+	ExerciseName     *string         `json:"exercise_name,omitempty"`
+	Prescription     json.RawMessage `json:"prescription"`
+	Notes            *string         `json:"notes,omitempty"`
+}
+
+type PrescriptionSet struct {
+	RepsMin         *int     `json:"reps_min,omitempty"`
+	RepsMax         *int     `json:"reps_max,omitempty"`
+	LoadKG          *float64 `json:"load_kg,omitempty"`
+	RIR             *float64 `json:"rir,omitempty"`
+	RPE             *float64 `json:"rpe,omitempty"`
+	DurationSeconds *int     `json:"duration_seconds,omitempty"`
+	RestSeconds     *int     `json:"rest_seconds,omitempty"`
+	Tempo           *string  `json:"tempo,omitempty"`
+}
+
+type Prescription struct {
+	Sets            []PrescriptionSet `json:"sets,omitempty"`
+	Rounds          *int              `json:"rounds,omitempty"`
+	DistanceMeters  *float64          `json:"distance_meters,omitempty"`
+	DurationSeconds *int              `json:"duration_seconds,omitempty"`
+	PaceMinPerKMMin *float64          `json:"pace_min_per_km_min,omitempty"`
+	PaceMinPerKMMax *float64          `json:"pace_min_per_km_max,omitempty"`
+	HeartRateZone   *string           `json:"heart_rate_zone,omitempty"`
+}
+
+type WorkoutComparison struct {
+	Steps []StepComparison `json:"steps"`
+}
+
+type StepComparison struct {
+	PlannedStepID string    `json:"planned_step_id"`
+	ExerciseKey   *string   `json:"exercise_key,omitempty"`
+	ExerciseName  *string   `json:"exercise_name,omitempty"`
+	PlannedSets   int       `json:"planned_sets,omitempty"`
+	ActualSets    int       `json:"actual_sets,omitempty"`
+	PlannedReps   []int     `json:"planned_reps,omitempty"`
+	ActualReps    []float64 `json:"actual_reps,omitempty"`
+	PlannedLoadKG []float64 `json:"planned_load_kg,omitempty"`
+	ActualLoadKG  []float64 `json:"actual_load_kg,omitempty"`
 }
 type PlannedTargets struct {
 	DurationMinutes *float64 `json:"duration_minutes,omitempty"`
@@ -299,6 +373,28 @@ type PlannedSessionWrite struct {
 	Date, Sport, SessionType, Priority string
 	Targets                            PlannedTargets
 	Notes                              *string
+	Title, Description                 string
+	Steps                              []PlannedStep
+}
+
+type PlanWrite struct {
+	Plan     TrainingPlan
+	Sessions []PlannedSessionWrite
+	Steps    map[string][]PlannedStep
+}
+
+type SyncChange struct {
+	SyncSeq   int64  `json:"sync_seq"`
+	Kind      string `json:"kind"`
+	Operation string `json:"operation"`
+	EntityID  string `json:"entity_id"`
+	Entity    any    `json:"entity,omitempty"`
+}
+
+type SyncPage struct {
+	Changes   []SyncChange `json:"changes"`
+	NextAfter int64        `json:"next_after"`
+	HasMore   bool         `json:"has_more"`
 }
 type PlannedSessionStatusWrite struct {
 	ID                    string

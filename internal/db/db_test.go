@@ -76,6 +76,43 @@ func TestTrainingContextMigrationDownAndUp(t *testing.T) {
 	}
 }
 
+func TestWorkoutAppMigrationBackfillsSequenceCursor(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "fitness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpToContext(context.Background(), database, ".", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO training_plans(id,athlete_id,title,goal_raw,active,client_updated_at,server_synced_at) VALUES('00000000-0000-7000-8000-000000000010','00000000-0000-0000-0000-000000000002','Legacy plan','{}',1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO workout_sessions(id,athlete_id,workout_date,title,source,metadata_raw,client_updated_at,server_synced_at,created_at) VALUES('00000000-0000-7000-8000-000000000011','00000000-0000-0000-0000-000000000002','2026-08-29','Legacy workout','mobile','{}',1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpContext(context.Background(), database, "."); err != nil {
+		t.Fatal(err)
+	}
+	var planSeq, workoutSeq, clock int64
+	if err := database.QueryRow("SELECT sync_seq FROM training_plans WHERE id='00000000-0000-7000-8000-000000000010'").Scan(&planSeq); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT sync_seq FROM workout_sessions WHERE id='00000000-0000-7000-8000-000000000011'").Scan(&workoutSeq); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT value FROM sync_clock WHERE id=1").Scan(&clock); err != nil {
+		t.Fatal(err)
+	}
+	if planSeq <= 0 || workoutSeq <= planSeq || clock != workoutSeq {
+		t.Fatalf("backfilled sequences = plan %d, workout %d, clock %d", planSeq, workoutSeq, clock)
+	}
+}
+
 func TestGarminConstraintsAndGeneratedSleepScores(t *testing.T) {
 	database := testDB(t)
 	athlete := "00000000-0000-0000-0000-000000000002"

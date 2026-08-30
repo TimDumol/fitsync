@@ -108,6 +108,42 @@ This is a small, read-only trial of the unofficial `python-garminconnect`
 client. It fetches Garmin sleep, HRV, and resting-heart-rate data and prints a
 compact JSON summary suitable for later loading into a sheet or database.
 
+## Mobile Android APK
+
+The Expo mobile app is under `apps/mobile/`. Build an installable Android
+release APK with:
+
+```bash
+./scripts/build-mobile.sh
+```
+
+The script installs the locked npm dependencies, runs the mobile typecheck and
+tests, generates the native Android project, and runs Gradle's
+`assembleRelease`. The APK is written to
+`apps/mobile/dist/fitsync-mobile.apk`; `dist/` is gitignored. Generated native
+project files are removed after the build.
+
+Release builds default to the production API and Pocket ID endpoints. Override
+`EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_POCKET_ID_ISSUER`,
+`EXPO_PUBLIC_OAUTH_CLIENT_ID`, or `EXPO_PUBLIC_OAUTH_RESOURCE` in the build
+environment for another deployment. The OAuth resource defaults to
+`<EXPO_PUBLIC_API_BASE_URL>/mcp`.
+
+On this system, the script defaults to these toolchain locations when the
+variables are unset:
+
+```text
+JAVA_HOME=/tmp/prestosupuesto-toolchain/jdk-21.0.12.1+1
+ANDROID_HOME=/home/timdumol/Android/Sdk
+```
+
+Override them for another machine, for example:
+
+```bash
+JAVA_HOME=/path/to/jdk ANDROID_HOME=/path/to/android-sdk \
+  ./scripts/build-mobile.sh
+```
+
 ## First run
 
 From PowerShell in this directory:
@@ -241,6 +277,46 @@ Only the curated files under `data\garmin` are uploaded. Garmin login tokens,
 raw activity files, and `.private` contents are excluded. Neon stores the
 records in private `fitness.records` JSONB storage and creates analysis views
 under `fitness_agent`, plus a no-login `fitness_agent_reader` group role.
+
+## Upload raw Garmin data to Fitnessd
+
+Fitnessd is the new canonical SQLite-backed service at
+`https://api.aries.timdumol.com`. The existing `garmin_sync.py` uploader sends
+the cached raw Garmin responses to its authenticated ingest endpoint; the
+server assigns them to `tim` from the per-athlete ingest token. Curated JSON
+and CSV exports continue to be written locally for human use.
+
+On the Windows machine, install the locked dependencies and securely obtain
+the `tim` ingest token configured for Fitnessd on Aries. Store it with the
+DPAPI-protected helper:
+
+```powershell
+uv sync
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\configure_fitnessd.ps1
+```
+
+Run a normal refresh manually first:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run_fitnessd_sync.ps1 -Days 3
+```
+
+This fetches Garmin, updates the local exports, and uploads raw records in
+server-sized batches. To include the original FIT-containing ZIP archives,
+add `-DownloadOriginals`. To retry an upload from already-cached raw files
+without contacting Garmin, use `-ExistingOnly`.
+
+Register the daily Windows task after the manual run succeeds:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_fitnessd_sync_task.ps1 -At "06:30" -Days 3
+```
+
+The task must run as the same Windows user that configured the Fitnessd and
+Garmin tokens, because the stored Fitnessd token is protected with Windows
+DPAPI. Its log is `.private\logs\fitnessd-sync.log`. Garmin can still require
+an interactive MFA refresh occasionally; run the sync manually if the task
+reports an authentication failure.
 
 Manual strength and circuit logs use structured `fitness.workout_sessions` and
 `fitness.workout_entries` tables. Ordered entries can represent exercise sets,

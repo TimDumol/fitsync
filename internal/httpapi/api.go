@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+	"github.com/timdumol/fitsync/internal/fitnessrepo"
 )
 
 const (
@@ -28,6 +29,7 @@ const (
 type API struct {
 	db   *sql.DB
 	auth Authorizer
+	repo *fitnessrepo.Repository
 }
 
 // AuthMiddleware lets the production transport authenticate once per HTTP
@@ -46,7 +48,7 @@ func NewAPI(database *sql.DB, authorizer Authorizer) *API {
 	if authorizer == nil {
 		authorizer = FakeHouseholdAuthorizer{}
 	}
-	return &API{db: database, auth: authorizer}
+	return &API{db: database, auth: authorizer, repo: fitnessrepo.New(database, time.Now)}
 }
 
 // Database exposes the shared store to application services such as MCP.
