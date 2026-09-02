@@ -25,6 +25,16 @@ func testDB(t *testing.T) *sql.DB {
 	return database
 }
 
+func TestDecodeWorkoutAcceptsNumericGarminActivityID(t *testing.T) {
+	workout := decodeWorkout("legacy-workout", "2026-09-02", "Imported workout", "garmin", `{"garmin_activity_id":123456789}`)
+	if workout == nil {
+		t.Fatal("numeric Garmin activity ID should be accepted")
+	}
+	if workout.LinkedActivityID == nil || *workout.LinkedActivityID != "123456789" {
+		t.Fatalf("linked activity ID = %#v", workout.LinkedActivityID)
+	}
+}
+
 func v7(t *testing.T) string {
 	t.Helper()
 	id, err := uuid.NewV7()

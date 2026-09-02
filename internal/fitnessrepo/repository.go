@@ -1,6 +1,7 @@
 package fitnessrepo
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -557,13 +558,13 @@ func (r *Repository) StrengthWorkouts(ctx context.Context, athleteID string, q S
 }
 
 type workoutMetadata struct {
-	WorkoutType      string   `json:"workout_type"`
-	StartedAt        *string  `json:"started_at"`
-	DurationMinutes  *float64 `json:"duration_minutes"`
-	PerceivedEffort  *float64 `json:"perceived_effort"`
-	LinkedActivityID *string  `json:"linked_activity_id"`
-	GarminActivityID *string  `json:"garmin_activity_id"`
-	Notes            *string  `json:"notes"`
+	WorkoutType      string          `json:"workout_type"`
+	StartedAt        *string         `json:"started_at"`
+	DurationMinutes  *float64        `json:"duration_minutes"`
+	PerceivedEffort  *float64        `json:"perceived_effort"`
+	LinkedActivityID *string         `json:"linked_activity_id"`
+	GarminActivityID json.RawMessage `json:"garmin_activity_id"`
+	Notes            *string         `json:"notes"`
 }
 type entryPayload struct {
 	ExerciseKey     *string  `json:"exercise_key"`
@@ -592,9 +593,35 @@ func decodeWorkout(id, date, title, source, raw string) *StrengthWorkout {
 	}
 	linked := m.LinkedActivityID
 	if linked == nil {
-		linked = m.GarminActivityID
+		var ok bool
+		linked, ok = decodeMetadataString(m.GarminActivityID)
+		if !ok {
+			return nil
+		}
 	}
 	return &StrengthWorkout{WorkoutID: id, Date: date, Title: title, Source: source, WorkoutType: m.WorkoutType, StartedAt: m.StartedAt, DurationMinutes: m.DurationMinutes, PerceivedEffort: m.PerceivedEffort, Notes: m.Notes, LinkedActivityID: linked}
+}
+
+func decodeMetadataString(raw json.RawMessage) (*string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case string:
+		return &typed, true
+	case json.Number:
+		value := typed.String()
+		return &value, true
+	default:
+		return nil, false
+	}
 }
 func (r *Repository) entries(ctx context.Context, athleteID, sessionID string, include bool) ([]StrengthEntry, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id,sequence_no,entry_type,payload_raw FROM workout_entries WHERE athlete_id=? AND session_id=? AND deleted_at IS NULL ORDER BY sequence_no,id`, athleteID, sessionID)

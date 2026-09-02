@@ -104,6 +104,22 @@ ChatGPT. Once the two subjects are bound, no pending auth request or approval
 step is needed. The `profile` scope is optional for this pre-provisioned flow;
 it is only useful if the defensive unknown-identity fallback is exercised.
 
+For the mobile app, create a separate Pocket ID OIDC client. It is a public
+client, so no client secret is placed in the APK:
+
+```text
+Name:             FitSync Mobile
+Client ID:        fitsync-mobile (or set EXPO_PUBLIC_OAUTH_CLIENT_ID to the generated ID)
+Callback URL:     fitsync:///oauthredirect
+Public Client:    enabled
+PKCE:             enabled (S256)
+API access:       Fitness MCP, user-delegated fitness:read and fitness:write
+```
+
+The callback URL must match exactly, including its slash count and path. The app requests
+`fitness:read fitness:write openid offline_access` and exchanges the code with
+PKCE; it does not use a client secret.
+
 This is a small, read-only trial of the unofficial `python-garminconnect`
 client. It fetches Garmin sleep, HRV, and resting-heart-rate data and prints a
 compact JSON summary suitable for later loading into a sheet or database.

@@ -3,7 +3,10 @@ import { meResponseSchema, planResponseSchema, planSchema, plannedSessionsRespon
 import { apiBaseURL } from '../config';
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
+  constructor(public readonly status: number, message: string, public readonly requestID?: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }
 
 export type TokenProvider = () => Promise<string | null>;
@@ -19,8 +22,11 @@ export class ApiClient {
     });
     if (!response.ok) {
       let message = `Request failed (${response.status})`;
-      try { const body = await response.json() as { error?: string }; if (body.error) message = body.error; } catch { /* bounded error body is optional */ }
-      throw new ApiError(response.status, message);
+      try {
+        const body = await response.json() as { error?: string; error_description?: string; message?: string };
+        message = body.error_description ?? body.error ?? body.message ?? message;
+      } catch { /* bounded error body is optional */ }
+      throw new ApiError(response.status, message, response.headers.get('x-request-id') ?? undefined);
     }
     return response.json() as Promise<T>;
   }
