@@ -39,8 +39,8 @@ describe('workout state machine', () => {
     expect(workout.entries.map((entry) => [entry.sequence_no, entry.planned_step_id, entry.set_number, entry.reps, entry.load_kg, entry.rir])).toEqual([
       [1, grouped.steps[0]!.step_id, 1, 5, 40, 2],
       [2, grouped.steps[1]!.step_id, 1, 8, 20, 2],
-      [3, grouped.steps[0]!.step_id, 2, 5, 40, 2],
-      [4, grouped.steps[1]!.step_id, 2, 8, 20, 2],
+      [3, grouped.steps[0]!.step_id, 2, 6, 42.5, 1],
+      [4, grouped.steps[1]!.step_id, 2, 9, 22, 1],
       [5, grouped.steps[2]!.step_id, 1, 10, 10, null],
     ]);
     expect(prescribedRestSeconds(workout, workout.entries[0])).toBe(0);
@@ -58,7 +58,7 @@ describe('workout state machine', () => {
     expect(() => plannedSessionSchema.parse({ ...session, groups: [{ group_id: '77777777-7777-4777-8777-777777777777', mode: 'timed', rounds: 2, step_sequence_nos: [1, 2] }] })).toThrow();
   });
 
-  it('copies the previous session first set, then carries the last set forward within the new session', () => {
+  it('copies the corresponding set from the latest session with the exercise', () => {
     const repeated: PlannedSession = {
       ...session,
       steps: [{ ...session.steps[0]!, prescription: { sets: [{ reps_min: 5, load_kg: 80, rir: 2 }, { reps_min: 5, load_kg: 80, rir: 2 }] } }],
@@ -66,9 +66,20 @@ describe('workout state machine', () => {
     const previous: import('../api/generated').Workout = {
       workout_id: '77777777-7777-4777-8777-777777777777', athlete_id: session.athlete_id, date: '2026-08-28', title: 'Other routine', source: 'mobile', status: 'completed', entries: [
         { entry_id: '88888888-8888-4888-8888-888888888888', sequence_no: 1, entry_type: 'set', exercise_name: 'Squat', set_number: 1, reps: 7, load_kg: 90, rir: 1 },
+        { entry_id: '99999999-9999-4999-8999-999999999999', sequence_no: 2, entry_type: 'set', exercise_name: 'Squat', set_number: 2, reps: 5, load_kg: 95, rir: 0 },
       ],
     };
     const workout = prescriptionToActual(repeated, session.athlete_id, session.date, [previous]);
-    expect(workout.entries.map((entry) => [entry.reps, entry.load_kg, entry.rir])).toEqual([[7, 90, 1], [7, 90, 1]]);
+    expect(workout.entries.map((entry) => [entry.reps, entry.load_kg, entry.rir])).toEqual([[7, 90, 1], [5, 95, 0]]);
+  });
+
+  it('tracks set confirmation and personal set notes in workout state', () => {
+    const workout = prescriptionToActual(session, session.athlete_id);
+    let state = workoutReducer(idleWorkoutState, { type: 'start', workout });
+    state = workoutReducer(state, { type: 'activate' });
+    state = workoutReducer(state, { type: 'edit_entry', entryID: workout.entries[0]!.entry_id, patch: { completed: true, notes: 'Left arm failed sooner.' } });
+    expect(state.workout?.entries[0]).toMatchObject({ completed: true, notes: 'Left arm failed sooner.' });
+    state = workoutReducer(state, { type: 'edit_entry', entryID: workout.entries[0]!.entry_id, patch: { completed: false } });
+    expect(state.workout?.entries[0]?.completed).toBe(false);
   });
 });

@@ -43,7 +43,7 @@ const workoutEntrySchema = z.object({
   rir_max: z.number().nullable().optional(), laterality: z.enum(['bilateral', 'unilateral', 'left', 'right', 'alternating', 'unknown']).nullable().optional(), reps_per_side: z.boolean().optional(),
   load_basis: z.enum(['total_external', 'per_limb', 'bodyweight_added', 'assistance', 'unknown']).nullable().optional(), load_per_limb_kg: z.number().nullable().optional(), total_external_load_kg: z.number().nullable().optional(), added_load_kg: z.number().nullable().optional(),
   muscle_groups: z.array(z.string()).optional(), direct_muscle_groups: z.array(z.string()).optional(), indirect_muscle_groups: z.array(z.string()).optional(),
-  notes: z.string().nullable().optional(), is_warmup: z.boolean().optional(),
+  notes: z.string().nullable().optional(), completed: z.boolean().optional(), is_warmup: z.boolean().optional(),
 }).strict();
 const comparisonStepSchema = z.object({
   planned_step_id: z.string().uuid(), exercise_key: z.string().nullable().optional(), exercise_name: z.string().nullable().optional(),

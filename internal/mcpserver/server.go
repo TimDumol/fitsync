@@ -231,6 +231,7 @@ type WorkoutEntryInput struct {
 	DirectMuscleGroups   []string `json:"direct_muscle_groups,omitempty"`
 	IndirectMuscleGroups []string `json:"indirect_muscle_groups,omitempty"`
 	Notes                *string  `json:"notes,omitempty"`
+	Completed            *bool    `json:"completed,omitempty"`
 	IsWarmup             bool     `json:"is_warmup,omitempty"`
 }
 type UpsertWorkoutInput struct {
@@ -952,7 +953,7 @@ func (s *Server) upsertWorkout(ctx context.Context, _ *mcp.CallToolRequest, in U
 			return nil, upsertWorkoutOutput{}, errors.New("invalid_input: entries are invalid")
 		}
 		seen[x.SequenceNo] = true
-		entries = append(entries, fitnessrepo.StrengthEntry{EntryID: entryID, IdempotencyKey: x.IdempotencyKey, SequenceNo: x.SequenceNo, EntryType: x.EntryType, ExerciseKey: x.ExerciseKey, ExerciseName: x.ExerciseName, UserLabel: x.UserLabel, SetNumber: x.SetNumber, Reps: x.Reps, DurationSeconds: x.DurationSeconds, LoadKG: x.LoadKG, LoadDescription: x.LoadDescription, IsBodyweight: x.IsBodyweight, ToFailure: x.ToFailure, RIR: x.RIR, RIRMin: x.RIRMin, RIRMax: x.RIRMax, Laterality: x.Laterality, RepsPerSide: x.RepsPerSide, LoadBasis: x.LoadBasis, LoadPerLimbKG: x.LoadPerLimbKG, TotalExternalLoadKG: x.TotalExternalLoadKG, AddedLoadKG: x.AddedLoadKG, MuscleGroups: x.MuscleGroups, DirectMuscleGroups: x.DirectMuscleGroups, IndirectMuscleGroups: x.IndirectMuscleGroups, Notes: x.Notes, IsWarmup: x.IsWarmup})
+		entries = append(entries, fitnessrepo.StrengthEntry{EntryID: entryID, IdempotencyKey: x.IdempotencyKey, SequenceNo: x.SequenceNo, EntryType: x.EntryType, ExerciseKey: x.ExerciseKey, ExerciseName: x.ExerciseName, UserLabel: x.UserLabel, SetNumber: x.SetNumber, Reps: x.Reps, DurationSeconds: x.DurationSeconds, LoadKG: x.LoadKG, LoadDescription: x.LoadDescription, IsBodyweight: x.IsBodyweight, ToFailure: x.ToFailure, RIR: x.RIR, RIRMin: x.RIRMin, RIRMax: x.RIRMax, Laterality: x.Laterality, RepsPerSide: x.RepsPerSide, LoadBasis: x.LoadBasis, LoadPerLimbKG: x.LoadPerLimbKG, AddedLoadKG: x.AddedLoadKG, TotalExternalLoadKG: x.TotalExternalLoadKG, MuscleGroups: x.MuscleGroups, DirectMuscleGroups: x.DirectMuscleGroups, IndirectMuscleGroups: x.IndirectMuscleGroups, Notes: x.Notes, Completed: x.Completed, IsWarmup: x.IsWarmup})
 	}
 	if in.LinkedActivityID != nil && !s.repo.OwnedActivity(ctx, id, *in.LinkedActivityID) {
 		return nil, upsertWorkoutOutput{}, errors.New("not_found: linked activity")

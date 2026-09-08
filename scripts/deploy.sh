@@ -8,6 +8,7 @@ cd "$repo_root"
 inventory="$repo_root/deploy/ansible/inventory/hosts.yml"
 playbook="$repo_root/deploy/ansible/site.yml"
 ansible_config="$repo_root/deploy/ansible/ansible.cfg"
+vault_file="$repo_root/deploy/ansible/group_vars/aries/secrets.yml"
 
 usage() {
   printf '%s\n' \
@@ -17,10 +18,15 @@ usage() {
 }
 
 ansible_args=()
+ask_vault_pass=0
 while (($# > 0)); do
   case "$1" in
-    --check|--diff|--ask-vault-pass)
+    --check|--diff)
       ansible_args+=("$1")
+      shift
+      ;;
+    --ask-vault-pass)
+      ask_vault_pass=1
       shift
       ;;
     --help|-h)
@@ -33,6 +39,12 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if ((ask_vault_pass)) && [[ -f "$vault_file" ]]; then
+  ansible_args+=(--ask-vault-pass)
+elif ((ask_vault_pass)); then
+  printf '%s\n' "No $vault_file found; skipping the vault-password prompt because missing server secrets are generated remotely." >&2
+fi
 
 if [[ ! -f "$inventory" ]]; then
   printf 'missing %s; copy hosts.example.yml and set the deployment host first\n' "$inventory" >&2

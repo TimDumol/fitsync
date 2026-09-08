@@ -71,13 +71,15 @@ export default function ActiveWorkout(): JSX.Element {
   const finish = async () => { dispatch({ type: 'finish' }); const completed = { ...state.workout!, status: 'completed' as const, completed_at: new Date().toISOString(), duration_minutes: Math.round(state.elapsedSeconds / 60) }; await deleteActiveTimer(db, completed.workout_id); await saveDraft(db, completed); await enqueueWorkout(db, 'complete', completed); router.replace({ pathname: '/workout/[id]/summary', params: { id: completed.workout_id } }); };
   const discard = () => { Alert.alert('Discard workout?', 'This removes the local workout draft.', [{ text: 'Keep workout', style: 'cancel' }, { text: 'Discard', style: 'destructive', onPress: () => { void deleteActiveTimer(db, state.workout!.workout_id).then(() => deleteDraft(db, state.workout!.workout_id)).then(() => router.back()); } }]); };
   const nextSequenceNo = () => state.workout!.entries.reduce((highest, entry) => Math.max(highest, entry.sequence_no), 0) + 1;
-  const addSet = () => { const last = state.workout!.entries.filter((entry) => entry.entry_type === 'set').at(-1); dispatch({ type: 'add_entry', entry: { entry_id: newUUID(), sequence_no: nextSequenceNo(), entry_type: 'set', exercise_key: last?.exercise_key, exercise_name: last?.exercise_name, planned_step_id: last?.planned_step_id, set_number: (last?.set_number ?? 0) + 1, reps: last?.reps ?? null, load_kg: last?.load_kg ?? null, rir: last?.rir ?? null } }); };
-  const addUnplanned = () => dispatch({ type: 'add_entry', entry: { entry_id: newUUID(), sequence_no: nextSequenceNo(), entry_type: 'set', exercise_name: 'Unplanned exercise', reps: null, load_kg: null, rir: null } });
+  const addSet = () => { const last = state.workout!.entries.filter((entry) => entry.entry_type === 'set').at(-1); dispatch({ type: 'add_entry', entry: { entry_id: newUUID(), sequence_no: nextSequenceNo(), entry_type: 'set', exercise_key: last?.exercise_key, exercise_name: last?.exercise_name, planned_step_id: last?.planned_step_id, set_number: (last?.set_number ?? 0) + 1, reps: last?.reps ?? null, load_kg: last?.load_kg ?? null, rir: last?.rir ?? null, completed: false } }); };
+  const addUnplanned = () => dispatch({ type: 'add_entry', entry: { entry_id: newUUID(), sequence_no: nextSequenceNo(), entry_type: 'set', exercise_name: 'Unplanned exercise', reps: null, load_kg: null, rir: null, completed: false } });
   const startRest = (entry?: WorkoutEntry) => { const seconds = prescribedRestSeconds(state.workout!, entry) || DEFAULT_REST_SECONDS; dispatch({ type: 'start_rest', seconds }); };
   const progress = state.restTargetSeconds > 0 ? Math.min(1, state.restElapsedSeconds / state.restTargetSeconds) : 1;
+  const setEntries = state.workout.entries.filter((entry) => entry.entry_type === 'set');
+  const completedSetCount = setEntries.filter((entry) => entry.completed).length;
   return <View style={[styles.screen, { paddingTop: process.env.EXPO_OS === 'android' ? insets.top : 0 }]}>
     <ScrollView testID="active-workout-screen" contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.content}>
-    <View style={styles.workoutHeader}><View style={styles.titleRow}><View style={styles.workoutIcon}><AppIcon name="dumbbell" size={22} color={colors.primary} /></View><View style={styles.titleCopy}><Text style={styles.title}>{state.workout.title}</Text><Text style={styles.muted}>Elapsed {formatDuration(state.elapsedSeconds)}</Text></View></View><View style={styles.livePill}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View></View>
+    <View style={styles.workoutHeader}><View style={styles.titleRow}><View style={styles.workoutIcon}><AppIcon name="dumbbell" size={22} color={colors.primary} /></View><View style={styles.titleCopy}><Text style={styles.title}>{state.workout.title}</Text><Text style={styles.muted}>Elapsed {formatDuration(state.elapsedSeconds)} · {completedSetCount}/{setEntries.length} sets done</Text></View></View><View style={styles.livePill}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View></View>
     <View testID="workout-entry-column-headers" style={styles.tableHeader}>
       <Text style={[styles.tableHeaderText, styles.exerciseColumn]}>Exercise</Text>
       <View style={styles.inputs}>
@@ -134,7 +136,8 @@ function EntryEditor({ entry, group, groupMemberLabel, roundComplete, coachingNo
   };
   const lateralityOptions: NonNullable<WorkoutEntry['laterality']>[] = ['bilateral', 'unilateral', 'left', 'right', 'alternating', 'unknown'];
   const loadBasisOptions: NonNullable<WorkoutEntry['load_basis']>[] = ['total_external', 'per_limb', 'bodyweight_added', 'assistance', 'unknown'];
-  return <View testID={`workout-entry-${entry.sequence_no}`} style={styles.entry}>
+  const completed = Boolean(entry.completed);
+  return <View testID={`workout-entry-${entry.sequence_no}`} style={[styles.entry, completed && styles.entryComplete]}>
     {memberLabel ? <Text testID={`workout-entry-${entry.sequence_no}-group`} style={styles.groupMeta}>{memberLabel}</Text> : null}
     <View style={styles.entryRow}>
       <Text style={[styles.entryTitle, styles.exerciseColumn]}>{entry.exercise_name ?? entry.entry_type} {entry.set_number ? `· Set ${entry.set_number}` : ''}</Text>
@@ -145,6 +148,22 @@ function EntryEditor({ entry, group, groupMemberLabel, roundComplete, coachingNo
       </View> : <Text>{entry.duration_seconds ?? 0} seconds</Text>}
     </View>
     {entry.entry_type === 'set' ? <>
+      <View style={styles.setActionRow}>
+        <Pressable
+          testID={`workout-entry-${entry.sequence_no}-complete-button`}
+          accessibilityRole="checkbox"
+          accessibilityLabel={`${entry.exercise_name ?? 'Set'} ${entry.set_number ? `set ${entry.set_number}` : 'set'} ${completed ? 'completed' : 'not completed'}`}
+          accessibilityState={{ checked: completed }}
+          onPress={() => onChange({ completed: !completed })}
+          style={({ pressed }) => [styles.completeToggle, completed && styles.completeToggleDone, pressed && styles.pressed]}
+        >
+          <View style={[styles.checkIcon, completed && styles.checkIconDone]}><AppIcon name={completed ? 'check' : 'check-circle-outline'} size={18} color={completed ? colors.white : colors.primary} /></View>
+          <View style={styles.completeCopy}><Text style={[styles.completeLabel, completed && styles.completeLabelDone]}>{completed ? 'Set completed' : 'Mark set done'}</Text><Text style={[styles.completeHint, completed && styles.completeHintDone]}>{completed ? 'Tap to undo' : 'Confirm you did this set'}</Text></View>
+        </Pressable>
+        <Text style={styles.setStatus}>{completed ? 'LOGGED' : 'OPEN'}</Text>
+      </View>
+      <Text style={styles.semanticLabel}>Set note</Text>
+      <TextInput testID={`workout-entry-${entry.sequence_no}-notes`} style={styles.setNotes} accessibilityLabel="Set notes" placeholder="Add a note about this set" placeholderTextColor={colors.subtle} value={entry.notes ?? ''} onChangeText={(value) => onChange({ notes: value || null })} multiline />
       <Text style={styles.semanticLabel}>Repetition and load basis</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         {lateralityOptions.map((option) => <Pressable key={option} accessibilityRole="button" accessibilityState={{ selected: laterality === option }} style={[styles.semanticChip, laterality === option && styles.semanticChipSelected]} onPress={() => onChange({ laterality: option, reps_per_side: option === 'unilateral' || option === 'alternating' ? entry.reps_per_side : false })}><Text style={[styles.semanticChipText, laterality === option && styles.semanticChipTextSelected]}>{option.replace('_', ' ')}</Text></Pressable>)}
@@ -177,11 +196,25 @@ const styles = StyleSheet.create({
   tableHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0, paddingHorizontal: 14 },
   tableHeaderText: { flex: 1, color: colors.muted, fontSize: 12, fontWeight: '800', textAlign: 'center' },
   exerciseColumn: { flex: 1.4, minWidth: 0 },
-  entry: { minWidth: 0, padding: spacing.lg, borderRadius: radii.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, gap: spacing.md },
+  entry: { minWidth: 0, padding: spacing.lg, borderRadius: radii.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, gap: spacing.md, borderCurve: 'continuous' },
+  entryComplete: { backgroundColor: colors.primarySoft, borderColor: '#BFE9D7' },
   entryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
   entryTitle: { flexShrink: 1, color: colors.ink, fontWeight: '800' },
   inputs: { flex: 2.6, minWidth: 0, flexDirection: 'row', gap: 8 },
   input: { flex: 1, minWidth: 0, minHeight: 44, borderWidth: 1, borderColor: colors.line, borderRadius: radii.sm, paddingHorizontal: spacing.sm, backgroundColor: colors.background, color: colors.ink, textAlign: 'center' },
+  setActionRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  completeToggle: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.sm, borderRadius: radii.sm, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.line, borderCurve: 'continuous' },
+  completeToggleDone: { backgroundColor: colors.primary, borderColor: colors.primary },
+  checkIcon: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: colors.primarySoft },
+  checkIconDone: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  completeCopy: { flex: 1, minWidth: 0, gap: 1 },
+  completeLabel: { color: colors.primaryDark, fontSize: 13, fontWeight: '800' },
+  completeLabelDone: { color: colors.white },
+  completeHint: { color: colors.muted, fontSize: 11 },
+  completeHintDone: { color: 'rgba(255,255,255,0.82)' },
+  setStatus: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 0.7 },
+  setNotes: { minHeight: 52, borderWidth: 1, borderColor: colors.line, borderRadius: radii.sm, padding: spacing.sm, backgroundColor: colors.background, color: colors.ink, textAlignVertical: 'top' },
+  pressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
   floatingRestTimer: { position: 'absolute', left: spacing.lg, right: spacing.lg, padding: spacing.lg, borderRadius: radii.lg, backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: '#BFE9D7', gap: spacing.md, zIndex: 10, boxShadow: '0 4px 16px rgba(16, 24, 40, 0.18)' },
   restHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   restLabel: { color: colors.primaryDark, fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.7 },

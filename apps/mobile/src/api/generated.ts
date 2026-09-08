@@ -110,6 +110,7 @@ export interface WorkoutEntry {
   direct_muscle_groups?: string[];
   indirect_muscle_groups?: string[];
   notes?: string | null;
+  completed?: boolean;
   is_warmup?: boolean;
 }
 

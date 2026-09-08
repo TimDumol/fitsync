@@ -42,8 +42,12 @@ Garmin data, databases, editor files, caches, or plaintext secrets.
 From the repository root:
 
 ```bash
-./scripts/deploy.sh --ask-vault-pass
+./scripts/deploy.sh
 ```
+
+If `group_vars/aries/secrets.yml` exists and is Ansible-Vault encrypted, add
+`--ask-vault-pass`. The deploy script skips that prompt when the file is absent
+because missing secret values are generated on the server.
 
 The script runs `./scripts/test.sh` and `./scripts/build.sh` first and refuses
 to run Ansible if either fails. `./scripts/deploy.sh --check --diff` passes

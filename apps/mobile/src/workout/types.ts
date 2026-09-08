@@ -88,8 +88,7 @@ function updateWorkout(state: WorkoutState, update: (workout: Workout) => Workou
 export function prescriptionToActual(session: PlannedSession, athleteID: string, date = session.date, previousWorkouts: Workout[] = []): Workout {
   let sequence = 1;
   const entries: WorkoutEntry[] = [];
-  const previousValues = firstValuesFromPreviousWorkouts(previousWorkouts, date);
-  const currentValues = new Map<string, ExerciseHistoryValues>();
+  const previousValues = setValuesFromPreviousWorkouts(previousWorkouts, date);
   for (const execution of expandSessionExecution(session)) {
     const step = execution.step;
     const setIndex = execution.setIndex;
@@ -101,14 +100,13 @@ export function prescriptionToActual(session: PlannedSession, athleteID: string,
     const set = setIndex == null ? undefined : sets[setIndex];
     if (!set) continue;
     const keys = exerciseIdentities(step.exercise_key, step.exercise_name);
-    const previous = keys.map((key) => currentValues.get(key) ?? previousValues.get(key)).find(Boolean);
+    const previous = keys.map((key) => previousValues.get(key)?.get((setIndex ?? 0) + 1)).find(Boolean);
     const values: ExerciseHistoryValues = {
       reps: previous?.reps ?? set.reps_min ?? null,
       load_kg: previous?.load_kg ?? set.load_kg ?? null,
       rir: previous?.rir ?? set.rir ?? null,
     };
-    for (const key of keys) currentValues.set(key, values);
-    entries.push({ entry_id: newUUID(), planned_step_id: step.step_id, sequence_no: sequence++, entry_type: 'set', exercise_key: step.exercise_key, exercise_name: step.exercise_name, set_number: (setIndex ?? 0) + 1, reps: values.reps, load_kg: values.load_kg, rir: values.rir, duration_seconds: set.duration_seconds ?? null, is_warmup: step.step_type === 'warmup' });
+    entries.push({ entry_id: newUUID(), planned_step_id: step.step_id, sequence_no: sequence++, entry_type: 'set', exercise_key: step.exercise_key, exercise_name: step.exercise_name, set_number: (setIndex ?? 0) + 1, reps: values.reps, load_kg: values.load_kg, rir: values.rir, duration_seconds: set.duration_seconds ?? null, completed: false, is_warmup: step.step_type === 'warmup' });
   }
   return { workout_id: newUUID(), athlete_id: athleteID, planned_session_id: session.session_id, date, title: session.title, source: 'mobile', workout_type: session.sport === 'strength' ? 'strength' : session.sport, status: 'in_progress', started_at: new Date().toISOString(), entries, planned_session: session };
 }
@@ -128,16 +126,27 @@ function exerciseEntries(workout: Workout): WorkoutEntry[] {
   return workout.entries.filter((entry) => entry.entry_type === 'set').sort((left, right) => left.sequence_no - right.sequence_no);
 }
 
-function firstValuesFromPreviousWorkouts(previousWorkouts: Workout[], date: string): Map<string, ExerciseHistoryValues> {
-  const result = new Map<string, ExerciseHistoryValues>();
+function setValuesFromPreviousWorkouts(previousWorkouts: Workout[], date: string): Map<string, Map<number, ExerciseHistoryValues>> {
+  const result = new Map<string, Map<number, ExerciseHistoryValues>>();
   const history = previousWorkouts
     .filter((workout) => workout.status === 'completed' && workout.date <= date)
     .sort((left, right) => right.date.localeCompare(left.date) || (right.completed_at ?? right.started_at ?? '').localeCompare(left.completed_at ?? left.started_at ?? ''));
   for (const workout of history) {
+    const sessionValues = new Map<string, Map<number, ExerciseHistoryValues>>();
+    const nextImplicitSetNumber = new Map<string, number>();
     for (const entry of exerciseEntries(workout)) {
       const keys = exerciseIdentities(entry.exercise_key, entry.exercise_name);
       const values = { reps: entry.reps ?? null, load_kg: entry.load_kg ?? null, rir: entry.rir ?? null };
-      for (const key of keys) if (!result.has(key)) result.set(key, values);
+      for (const key of keys) {
+        const setNumber = entry.set_number ?? (nextImplicitSetNumber.get(key) ?? 0) + 1;
+        nextImplicitSetNumber.set(key, Math.max(nextImplicitSetNumber.get(key) ?? 0, setNumber));
+        const valuesBySet = sessionValues.get(key) ?? new Map<number, ExerciseHistoryValues>();
+        if (!valuesBySet.has(setNumber)) valuesBySet.set(setNumber, values);
+        sessionValues.set(key, valuesBySet);
+      }
+    }
+    for (const [key, valuesBySet] of sessionValues) {
+      if (!result.has(key)) result.set(key, valuesBySet);
     }
   }
   return result;

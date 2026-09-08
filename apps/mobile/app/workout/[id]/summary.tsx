@@ -48,7 +48,7 @@ export default function WorkoutSummary(): JSX.Element {
     <MuscleOverview testID="workout-muscle-overview" workouts={workout} title="Muscles worked" subtitle="Working-set focus for this routine" />
     {workout.notes ? <View style={styles.notes}><Text style={styles.sectionTitle}>Notes</Text><Text>{workout.notes}</Text></View> : null}
     <Text style={styles.sectionTitle}>Recorded sets</Text>
-    {entries.length === 0 ? <Text style={styles.muted}>No entries recorded.</Text> : entries.map((entry) => <View key={entry.entry_id} testID={`workout-summary-entry-${entry.sequence_no}`} style={styles.row}><View style={styles.rowHeader}><View style={styles.rowIcon}><AppIcon name={entry.entry_type === 'set' ? 'dumbbell' : 'note-text-outline'} size={18} color={colors.primary} /></View><Text style={styles.rowTitle}>{entry.exercise_name ?? entry.user_label ?? entry.entry_type}{entry.set_number ? ` · Set ${entry.set_number}` : ''}</Text></View><Text style={styles.detail}>{entryDetails(entry)}</Text>{muscleGroupsForEntry(entry).length > 0 ? <View style={styles.chips}>{muscleGroupsForEntry(entry).map((group) => <Text key={group} style={styles.chip}>{muscleGroupLabel(group)}</Text>)}</View> : null}</View>)}
+    {entries.length === 0 ? <Text style={styles.muted}>No entries recorded.</Text> : entries.map((entry) => <View key={entry.entry_id} testID={`workout-summary-entry-${entry.sequence_no}`} style={[styles.row, entry.completed && styles.completedRow]}><View style={styles.rowHeader}><View style={styles.rowIcon}><AppIcon name={entry.entry_type === 'set' ? entry.completed ? 'check-circle' : 'dumbbell' : 'note-text-outline'} size={18} color={colors.primary} /></View><Text style={styles.rowTitle}>{entry.exercise_name ?? entry.user_label ?? entry.entry_type}{entry.set_number ? ` · Set ${entry.set_number}` : ''}</Text></View><Text style={styles.detail}>{entryDetails(entry)}</Text>{entry.completed ? <Text style={styles.completedLabel}>Set completed</Text> : null}{entry.notes ? <View style={styles.setNote}><AppIcon name="note-text-outline" size={16} color={colors.warmInk} /><Text style={styles.setNoteText}>{entry.notes}</Text></View> : null}{muscleGroupsForEntry(entry).length > 0 ? <View style={styles.chips}>{muscleGroupsForEntry(entry).map((group) => <Text key={group} style={styles.chip}>{muscleGroupLabel(group)}</Text>)}</View> : null}</View>)}
     {workout.comparison?.steps.length ? <><Text style={styles.sectionTitle}>Against plan</Text>{workout.comparison.steps.map((step) => <View key={step.planned_step_id} style={styles.row}><Text style={styles.rowTitle}>{step.exercise_name ?? step.exercise_key}</Text><Text style={styles.detail}>Prescribed {step.planned_sets ?? 0} sets · Actual {step.actual_sets ?? 0} sets</Text></View>)}</> : null}
   </ScrollView></View>;
 }
@@ -76,10 +76,14 @@ const styles = StyleSheet.create({
   sectionTitle: { color: colors.ink, fontSize: 20, fontWeight: '800', marginTop: spacing.sm },
   notes: { gap: spacing.sm, padding: spacing.lg, borderRadius: radii.md, backgroundColor: colors.warm, borderWidth: 1, borderColor: '#F8D6AE' },
   row: { gap: spacing.sm, padding: spacing.lg, borderRadius: radii.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  completedRow: { backgroundColor: colors.primarySoft, borderColor: '#BFE9D7' },
   rowHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   rowIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: colors.primarySoft },
   rowTitle: { flex: 1, color: colors.ink, fontWeight: '800' },
   detail: { color: colors.muted, lineHeight: 20 },
+  completedLabel: { color: colors.primaryDark, fontSize: 12, fontWeight: '800' },
+  setNote: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs, padding: spacing.sm, borderRadius: radii.sm, backgroundColor: colors.warm },
+  setNoteText: { flex: 1, color: colors.warmInk, lineHeight: 19 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 2 },
   chip: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: radii.pill, backgroundColor: colors.primarySoft, color: colors.primaryDark, fontSize: 11, overflow: 'hidden' },
   muted: { color: colors.muted },

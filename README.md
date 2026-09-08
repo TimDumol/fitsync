@@ -49,8 +49,12 @@ are generated on the server only when their `0400` files do not already exist.
 Run the guarded deployment with:
 
 ```bash
-./scripts/deploy.sh --ask-vault-pass
+./scripts/deploy.sh
 ```
+
+If `deploy/ansible/group_vars/aries/secrets.yml` exists and is Ansible-Vault
+encrypted, add `--ask-vault-pass`. The deploy script skips that prompt when the
+file is absent because missing secret values are generated on the server.
 
 Use `./scripts/deploy.sh --check --diff` for a check-mode preview. The entrypoint
 refuses to invoke Ansible unless `./scripts/test.sh` and `./scripts/build.sh`

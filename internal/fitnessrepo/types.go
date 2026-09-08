@@ -142,6 +142,7 @@ type StrengthEntry struct {
 	DirectMuscleGroups     []string `json:"direct_muscle_groups,omitempty"`
 	IndirectMuscleGroups   []string `json:"indirect_muscle_groups,omitempty"`
 	Notes                  *string  `json:"notes,omitempty"`
+	Completed              *bool    `json:"completed,omitempty"`
 	IsWarmup               bool     `json:"is_warmup,omitempty"`
 }
 

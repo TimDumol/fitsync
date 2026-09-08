@@ -767,6 +767,7 @@ components:
         direct_muscle_groups: { type: array, items: { type: string } }
         indirect_muscle_groups: { type: array, items: { type: string } }
         notes: { type: string, nullable: true }
+        completed: { type: boolean }
         is_warmup: { type: boolean }
     WorkoutPage:
       type: object

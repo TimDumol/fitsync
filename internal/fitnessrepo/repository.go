@@ -806,6 +806,7 @@ type entryPayload struct {
 	DirectMuscleGroups   []string `json:"direct_muscle_groups"`
 	IndirectMuscleGroups []string `json:"indirect_muscle_groups"`
 	Notes                *string  `json:"notes"`
+	Completed            *bool    `json:"completed"`
 	IsWarmup             bool     `json:"is_warmup"`
 }
 
@@ -842,7 +843,7 @@ func (r *Repository) entries(ctx context.Context, athleteID, sessionID string, i
 			continue
 		}
 		groups := p.MuscleGroups
-		value := StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, RepsPerSide: p.RepsPerSide, LoadBasis: p.LoadBasis, LoadPerLimbKG: p.LoadPerLimbKG, TotalExternalLoadKG: p.TotalExternalLoadKG, AddedLoadKG: p.AddedLoadKG, MuscleGroups: groups, DirectMuscleGroups: p.DirectMuscleGroups, IndirectMuscleGroups: p.IndirectMuscleGroups, Notes: p.Notes, IsWarmup: p.IsWarmup}
+		value := StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, RepsPerSide: p.RepsPerSide, LoadBasis: p.LoadBasis, LoadPerLimbKG: p.LoadPerLimbKG, TotalExternalLoadKG: p.TotalExternalLoadKG, AddedLoadKG: p.AddedLoadKG, MuscleGroups: groups, DirectMuscleGroups: p.DirectMuscleGroups, IndirectMuscleGroups: p.IndirectMuscleGroups, Notes: p.Notes, Completed: p.Completed, IsWarmup: p.IsWarmup}
 		if len(value.DirectMuscleGroups) == 0 && len(value.IndirectMuscleGroups) == 0 && len(p.MuscleGroups) > 0 {
 			value.DirectMuscleGroups = append([]string(nil), p.MuscleGroups...)
 		}
@@ -1067,7 +1068,7 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 		if entryLookup != nil && !errors.Is(entryLookup, sql.ErrNoRows) {
 			return rollback(errors.New("internal_error: workout entry lookup"))
 		}
-		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, RepsPerSide: entry.RepsPerSide, LoadBasis: entry.LoadBasis, LoadPerLimbKG: entry.LoadPerLimbKG, TotalExternalLoadKG: entry.TotalExternalLoadKG, AddedLoadKG: entry.AddedLoadKG, MuscleGroups: entry.MuscleGroups, DirectMuscleGroups: entry.DirectMuscleGroups, IndirectMuscleGroups: entry.IndirectMuscleGroups, Notes: entry.Notes, IsWarmup: entry.IsWarmup}
+		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, RepsPerSide: entry.RepsPerSide, LoadBasis: entry.LoadBasis, LoadPerLimbKG: entry.LoadPerLimbKG, TotalExternalLoadKG: entry.TotalExternalLoadKG, AddedLoadKG: entry.AddedLoadKG, MuscleGroups: entry.MuscleGroups, DirectMuscleGroups: entry.DirectMuscleGroups, IndirectMuscleGroups: entry.IndirectMuscleGroups, Notes: entry.Notes, Completed: entry.Completed, IsWarmup: entry.IsWarmup}
 		raw, _ := json.Marshal(payload)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_entries(id,session_id,athlete_id,sequence_no,entry_type,payload_raw,client_updated_at,server_synced_at,deleted_at,idempotency_key) VALUES(?,?,?,?,?,?,?, ?,NULL,?) ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id,athlete_id=excluded.athlete_id,sequence_no=excluded.sequence_no,entry_type=excluded.entry_type,payload_raw=excluded.payload_raw,client_updated_at=excluded.client_updated_at,server_synced_at=excluded.server_synced_at,deleted_at=NULL,idempotency_key=excluded.idempotency_key`, entry.EntryID, in.ID, athleteID, entry.SequenceNo, entry.EntryType, string(raw), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(entry.IdempotencyKey))); err != nil {
 			return rollback(normalizeWriteError(err))

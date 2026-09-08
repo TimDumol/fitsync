@@ -49,14 +49,18 @@ func TestPlanDraftPublishWorkoutCompletionAndPull(t *testing.T) {
 	if workout.Workout.Status != "in_progress" || workout.Workout.Entries[0].PlannedStepID == nil {
 		t.Fatalf("started workout = %#v", workout)
 	}
-	completed, err := repository.CompleteWorkout(context.Background(), testAthlete, WorkoutWrite{ID: workoutID, ClientUpdatedAt: 2, Date: "2026-09-01", Title: "Strength A", WorkoutType: "strength", Source: "mobile", Status: "completed", PlannedSessionID: &sessionID, StartedAt: &started, Entries: []StrengthEntry{{EntryID: entryID, PlannedStepID: &stepID, SequenceNo: 1, EntryType: "set", ExerciseName: &exercise, Reps: &reps, LoadKG: &load, RIR: &rir}}})
+	setCompleted, setNotes := true, "Left arm failed sooner."
+	completed, err := repository.CompleteWorkout(context.Background(), testAthlete, WorkoutWrite{ID: workoutID, ClientUpdatedAt: 2, Date: "2026-09-01", Title: "Strength A", WorkoutType: "strength", Source: "mobile", Status: "completed", PlannedSessionID: &sessionID, StartedAt: &started, Entries: []StrengthEntry{{EntryID: entryID, PlannedStepID: &stepID, SequenceNo: 1, EntryType: "set", ExerciseName: &exercise, Reps: &reps, LoadKG: &load, RIR: &rir, Completed: &setCompleted, Notes: &setNotes}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if completed.Workout.Status != "completed" || completed.Workout.PlannedSession == nil || completed.Workout.Comparison == nil {
 		t.Fatalf("completed workout = %#v", completed)
 	}
-	retried, err := repository.CompleteWorkout(context.Background(), testAthlete, WorkoutWrite{ID: workoutID, ClientUpdatedAt: 2, Date: "2026-09-01", Title: "Strength A", WorkoutType: "strength", Source: "mobile", Status: "completed", PlannedSessionID: &sessionID, Entries: []StrengthEntry{{EntryID: entryID, PlannedStepID: &stepID, SequenceNo: 1, EntryType: "set", ExerciseName: &exercise, Reps: &reps, LoadKG: &load, RIR: &rir}}})
+	if completed.Workout.Entries[0].Completed == nil || !*completed.Workout.Entries[0].Completed || completed.Workout.Entries[0].Notes == nil || *completed.Workout.Entries[0].Notes != setNotes {
+		t.Fatalf("set completion metadata was not persisted: %#v", completed.Workout.Entries[0])
+	}
+	retried, err := repository.CompleteWorkout(context.Background(), testAthlete, WorkoutWrite{ID: workoutID, ClientUpdatedAt: 2, Date: "2026-09-01", Title: "Strength A", WorkoutType: "strength", Source: "mobile", Status: "completed", PlannedSessionID: &sessionID, Entries: []StrengthEntry{{EntryID: entryID, PlannedStepID: &stepID, SequenceNo: 1, EntryType: "set", ExerciseName: &exercise, Reps: &reps, LoadKG: &load, RIR: &rir, Completed: &setCompleted, Notes: &setNotes}}})
 	if err != nil || retried.SubmittedVersionWon {
 		t.Fatalf("repeated completion = %#v, %v", retried, err)
 	}
