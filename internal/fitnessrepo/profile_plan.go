@@ -101,6 +101,12 @@ func (r *Repository) Plan(ctx context.Context, athleteID, from, to string, inclu
 }
 
 func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string, in PlannedSessionWrite) (PlannedSessionWinner, error) {
+	if err := validateIdempotencyKey(in.IdempotencyKey); err != nil {
+		return PlannedSessionWinner{}, err
+	}
+	if err := validateIdempotencyKey(in.PlanIdempotencyKey); err != nil {
+		return PlannedSessionWinner{}, err
+	}
 	var owner string
 	var old int64
 	err := r.db.QueryRowContext(ctx, "SELECT athlete_id,client_updated_at FROM planned_sessions WHERE id=?", in.ID).Scan(&owner, &old)
@@ -125,7 +131,7 @@ func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string,
 				return PlannedSessionWinner{}, e
 			}
 			clock := r.now()
-			if _, e := r.db.ExecContext(ctx, "INSERT INTO training_plans(id,athlete_id,title,goal_raw,status,source,active,client_updated_at,server_synced_at,created_at) VALUES(?,?,?, '{}','active','manual',1,?,?,?)", planID, athleteID, "Training plan", in.ClientUpdatedAt, clock, clock); e != nil {
+			if _, e := r.db.ExecContext(ctx, "INSERT INTO training_plans(id,athlete_id,title,goal_raw,status,source,active,client_updated_at,server_synced_at,created_at,idempotency_key) VALUES(?,?,?, '{}','active','manual',1,?,?,?,?)", planID, athleteID, "Training plan", in.ClientUpdatedAt, clock, clock, nullableStringValue(optionalString(in.PlanIdempotencyKey))); e != nil {
 				return PlannedSessionWinner{}, normalizeWriteError(e)
 			}
 		} else if err != nil {
@@ -141,9 +147,9 @@ func (r *Repository) UpsertPlannedSession(ctx context.Context, athleteID string,
 	raw, _ := json.Marshal(in.Targets)
 	clock := r.now()
 	if created {
-		_, err = r.db.ExecContext(ctx, `INSERT INTO planned_sessions(id,plan_id,athlete_id,session_date,sport,session_type,priority,targets_raw,notes,status,client_updated_at,server_synced_at) VALUES(?,?,?,?,?,?,?,?,?,'planned',?,?)`, in.ID, planID, athleteID, in.Date, in.Sport, in.SessionType, in.Priority, string(raw), nullableStringValue(in.Notes), in.ClientUpdatedAt, clock)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO planned_sessions(id,plan_id,athlete_id,session_date,sport,session_type,priority,targets_raw,notes,status,client_updated_at,server_synced_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,'planned',?,?,?)`, in.ID, planID, athleteID, in.Date, in.Sport, in.SessionType, in.Priority, string(raw), nullableStringValue(in.Notes), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(in.IdempotencyKey)))
 	} else {
-		_, err = r.db.ExecContext(ctx, `UPDATE planned_sessions SET plan_id=?,session_date=?,sport=?,session_type=?,priority=?,targets_raw=?,notes=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL WHERE id=?`, planID, in.Date, in.Sport, in.SessionType, in.Priority, string(raw), nullableStringValue(in.Notes), in.ClientUpdatedAt, clock, in.ID)
+		_, err = r.db.ExecContext(ctx, `UPDATE planned_sessions SET plan_id=?,session_date=?,sport=?,session_type=?,priority=?,targets_raw=?,notes=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL,idempotency_key=? WHERE id=?`, planID, in.Date, in.Sport, in.SessionType, in.Priority, string(raw), nullableStringValue(in.Notes), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(in.IdempotencyKey)), in.ID)
 	}
 	if err != nil {
 		return PlannedSessionWinner{}, normalizeWriteError(err)

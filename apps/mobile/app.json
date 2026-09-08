@@ -8,9 +8,11 @@
     "userInterfaceStyle": "automatic",
     "plugins": [
       "expo-router",
-      "expo-secure-store",
+      ["expo-secure-store", { "configureAndroidBackup": false }],
       "expo-sqlite",
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withGarminChaquopy",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true

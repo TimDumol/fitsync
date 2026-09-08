@@ -151,7 +151,7 @@ Do not include raw payloads, SQL, tokens, other athlete IDs, or health values in
 Do not pass arbitrary Garmin JSON into MCP structs. Add decoder functions that normalize both formats already present in `garmin_records`:
 
 1. Direct Fitnessd ingestion, generally Garmin camelCase raw payloads.
-2. Imported legacy Neon records, generally curated snake_case payloads.
+2. Imported legacy records, generally curated snake_case payloads.
 
 Add `internal/fitnessdata` with these files:
 
@@ -626,12 +626,12 @@ Input:
 
 Validation:
 
-- Existing or UUIDv7 `workout_id` required.
+- `workout_id` is optional for new records; when omitted, the server generates a UUIDv7. An optional `idempotency_key` is a caller-owned secondary key for safe retries.
 - `client_updated_at` non-negative.
 - Date/title/workout type/source required; title max 512, notes max 4000.
 - Workout type enum: `strength`, `circuit`, `mobility`, `cardio`, `run`, `other`.
 - Duration 0-1440; RPE integer 1-10.
-- Entries max 200. Each has existing or UUIDv7 `entry_id`, unique positive `sequence_no`, entry type `set`, `rest`, or `note`, and a type-appropriate bounded payload.
+- Entries max 200. New `entry_id` values are optional and are generated as UUIDv7 values when omitted. Each has an optional `idempotency_key`, unique positive `sequence_no`, entry type `set`, `rest`, or `note`, and a type-appropriate bounded payload.
 - Set: exercise key/name required; reps 0-1000; duration 0-86400; load 0-2000; RIR values 0-10; muscle groups maximum 10.
 - Rest: duration 0-86400.
 - Note: text max 4000.
@@ -777,7 +777,7 @@ Input:
 }
 ```
 
-- IDs existing or UUIDv7.
+- New `plan_id` and `session_id` values may be omitted; the server generates UUIDv7 values. Use `plan_idempotency_key` and `idempotency_key` as caller-owned secondary keys when a retry must address the same plan or session.
 - If `plan_id` is new, create a minimal active plan titled `Training plan` with `{}` goal. If another active plan exists, require its ID rather than silently replacing it.
 - Sport enum uses normalized activity categories.
 - Session type 1-64 characters from a documented open enum; initially recognize `easy`, `long`, `recovery`, `tempo`, `threshold`, `intervals`, `race`, `strength`, `mobility`, `rest`, `other`.
@@ -851,6 +851,18 @@ Aggregation rules:
 - Comparable-HR pace trend uses runs 20-120 minutes, 3-25 km, and with average HR. Partition into first and last thirds of the period. Pair groups by average HR within 5 bpm, compare median speed (not pace), require at least three runs in each group. Labels: speed change within 2% `stable`, above 2% `improving`, below -2% `declining`; otherwise `unavailable`. Return method and sample counts.
 - Strength exercise trend groups sets by `exercise_key`. For each exercise, calculate best estimated 1RM per period only for 1-12 reps and positive external load using Epley: `load_kg * (1 + reps/30)`. Do not calculate bodyweight exercise 1RM. Return at most 20 exercises ranked by recent set count.
 - Plan completion rate is completed divided by planned sessions whose date is on or before `to`; cancelled sessions are excluded from numerator and denominator. Report skipped separately.
+
+### 7.16 Structured plan draft IDs and JSON objects
+
+`upsert_training_plan_draft` follows the same create-ID rule: new `plan_id`,
+session `session_id`, and step `step_id` values are optional and generated as
+UUIDv7 values by the server. Each plan, session, and step may carry an
+`idempotency_key`; these keys are stored separately from UUID primary IDs and
+are unique for live records belonging to an athlete.
+
+`goal` and `steps[].prescription` are JSON objects in both input and output.
+The MCP output schema exposes them as objects (and permits null for
+forward-compatible reads), never as byte arrays.
 
 ## 8. Service architecture
 

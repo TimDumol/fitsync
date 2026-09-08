@@ -2,7 +2,6 @@
 .venv-wsl/
 .private/
 data/
-data/neon_dump/
 archive/
 archives/
 *.db
@@ -20,7 +19,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
-.neon-connect-string
+.phonerc
 .pocket-id-api-key
 *.pem
 *.key
@@ -33,3 +32,6 @@ apps/mobile/.expo/
 apps/mobile/dist/
 apps/mobile/android/
 apps/mobile/ios/
+# Gradle output for local Expo modules
+apps/mobile/modules/garmin-sync/android/build/
+android/build/

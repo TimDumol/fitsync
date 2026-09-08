@@ -35,4 +35,7 @@ export function useSync(api: ApiClient, athleteID: string | null): { syncing: bo
 
 export async function localPlan(db: SQLiteDatabase, athleteID: string): Promise<TrainingPlan | null> { const cached = await plans(db, athleteID); return cached.find((item) => item.status === 'active') ?? cached[0] ?? null; }
 export async function localWorkouts(db: SQLiteDatabase, athleteID: string): Promise<Workout[]> { return workouts(db, athleteID); }
+export async function localWorkout(db: SQLiteDatabase, athleteID: string, workoutID: string): Promise<Workout | null> {
+  return (await localWorkouts(db, athleteID)).find((item) => item.workout_id === workoutID) ?? null;
+}
 export async function localActiveDraft(db: SQLiteDatabase, athleteID: string): Promise<Workout | null> { return (await activeDrafts(db, athleteID))[0] ?? null; }

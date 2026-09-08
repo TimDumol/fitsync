@@ -1,0 +1,27 @@
+appId: com.fitsync.mobile
+name: Review and skip a planned session
+tags:
+  - smoke
+---
+- launchApp
+- tapOn: Plan
+- assertVisible:
+    id: plan-screen
+- assertVisible: Fixture strength plan
+- tapOn:
+    id: planned-session-row
+- assertVisible:
+    id: planned-session-screen
+- assertVisible: ".*Goblet squat.*"
+- scrollUntilVisible:
+    element:
+      id: session-skip-button
+    direction: DOWN
+- tapOn:
+    id: session-skip-button
+- scrollUntilVisible:
+    element: "skipped"
+    direction: UP
+- assertVisible: ".*skipped.*"
+- assertNotVisible:
+    id: session-skip-button

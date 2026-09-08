@@ -45,11 +45,11 @@ type Page[T any] struct {
 
 type DailyHealthItem struct {
 	Date          string                            `json:"date"`
-	Sleep         *fitnessdata.SleepSummary         `json:"sleep,omitempty"`
-	HRV           *fitnessdata.HRVSummary           `json:"hrv,omitempty"`
-	HeartRate     *fitnessdata.HeartRateSummary     `json:"heart_rate,omitempty"`
-	Stress        *fitnessdata.StressSummary        `json:"stress,omitempty"`
-	BodyBattery   *fitnessdata.BodyBatterySummary   `json:"body_battery,omitempty"`
+	Sleep         *fitnessdata.SleepSummary         `json:"sleep"`
+	HRV           *fitnessdata.HRVSummary           `json:"hrv"`
+	HeartRate     *fitnessdata.HeartRateSummary     `json:"heart_rate"`
+	Stress        *fitnessdata.StressSummary        `json:"stress"`
+	BodyBattery   *fitnessdata.BodyBatterySummary   `json:"body_battery"`
 	SpO2          *fitnessdata.SpO2Summary          `json:"spo2,omitempty"`
 	DailyActivity *fitnessdata.DailyActivitySummary `json:"daily_activity,omitempty"`
 	Completeness  map[string]bool                   `json:"completeness"`
@@ -111,38 +111,59 @@ type StrengthWorkout struct {
 }
 
 type StrengthEntry struct {
-	EntryID         string   `json:"entry_id"`
-	PlannedStepID   *string  `json:"planned_step_id,omitempty"`
-	SequenceNo      int      `json:"sequence_no"`
-	EntryType       string   `json:"entry_type"`
-	ExerciseKey     *string  `json:"exercise_key,omitempty"`
-	ExerciseName    *string  `json:"exercise_name,omitempty"`
-	UserLabel       *string  `json:"user_label,omitempty"`
-	SetNumber       *int     `json:"set_number,omitempty"`
-	Reps            *float64 `json:"reps,omitempty"`
-	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
-	LoadKG          *float64 `json:"load_kg,omitempty"`
-	LoadDescription *string  `json:"load_description,omitempty"`
-	IsBodyweight    *bool    `json:"is_bodyweight,omitempty"`
-	ToFailure       *bool    `json:"to_failure,omitempty"`
-	RIR             *float64 `json:"rir,omitempty"`
-	RIRMin          *float64 `json:"rir_min,omitempty"`
-	RIRMax          *float64 `json:"rir_max,omitempty"`
-	Laterality      *string  `json:"laterality,omitempty"`
-	MuscleGroups    []string `json:"muscle_groups,omitempty"`
-	Notes           *string  `json:"notes,omitempty"`
-	IsWarmup        bool     `json:"is_warmup,omitempty"`
+	EntryID                string   `json:"entry_id"`
+	IdempotencyKey         string   `json:"-"`
+	PlannedStepID          *string  `json:"planned_step_id,omitempty"`
+	SequenceNo             int      `json:"sequence_no"`
+	EntryType              string   `json:"entry_type"`
+	ExerciseKey            *string  `json:"exercise_key,omitempty"`
+	ExerciseName           *string  `json:"exercise_name,omitempty"`
+	UserLabel              *string  `json:"user_label,omitempty"`
+	SetNumber              *int     `json:"set_number,omitempty"`
+	Reps                   *float64 `json:"reps,omitempty"`
+	DurationSeconds        *float64 `json:"duration_seconds,omitempty"`
+	LoadKG                 *float64 `json:"load_kg,omitempty"`
+	LoadDescription        *string  `json:"load_description,omitempty"`
+	IsBodyweight           *bool    `json:"is_bodyweight,omitempty"`
+	ToFailure              *bool    `json:"to_failure,omitempty"`
+	RIR                    *float64 `json:"rir,omitempty"`
+	RIRMin                 *float64 `json:"rir_min,omitempty"`
+	RIRMax                 *float64 `json:"rir_max,omitempty"`
+	Laterality             *string  `json:"laterality,omitempty"`
+	RepsPerSide            *bool    `json:"reps_per_side,omitempty"`
+	LoadBasis              *string  `json:"load_basis,omitempty"`
+	LoadPerLimbKG          *float64 `json:"load_per_limb_kg,omitempty"`
+	TotalExternalLoadKG    *float64 `json:"total_external_load_kg,omitempty"`
+	AddedLoadKG            *float64 `json:"added_load_kg,omitempty"`
+	LoadSemantics          string   `json:"load_semantics"`
+	NormalizedReps         *float64 `json:"normalized_reps,omitempty"`
+	NormalizedVolumeLoadKG *float64 `json:"normalized_volume_load_kg,omitempty"`
+	MuscleGroups           []string `json:"muscle_groups,omitempty"`
+	DirectMuscleGroups     []string `json:"direct_muscle_groups,omitempty"`
+	IndirectMuscleGroups   []string `json:"indirect_muscle_groups,omitempty"`
+	Notes                  *string  `json:"notes,omitempty"`
+	IsWarmup               bool     `json:"is_warmup,omitempty"`
 }
 
 type StrengthSummary struct {
-	WorkingSets     int            `json:"working_sets"`
-	VolumeLoadKG    *float64       `json:"volume_load_kg,omitempty"`
-	MuscleGroupSets map[string]int `json:"muscle_group_sets"`
-	HighEffortSets  int            `json:"high_effort_sets"`
+	WorkingSets            int                            `json:"working_sets"`
+	VolumeLoadKG           *float64                       `json:"volume_load_kg,omitempty"`
+	MuscleGroupSets        map[string]int                 `json:"muscle_group_sets"`
+	HighEffortSets         int                            `json:"high_effort_sets"`
+	NormalizedVolumeLoadKG *float64                       `json:"normalized_volume_load_kg,omitempty"`
+	LoadMethod             string                         `json:"load_method"`
+	MuscleVolume           map[string]MuscleVolumeSummary `json:"muscle_volume"`
+}
+
+type MuscleVolumeSummary struct {
+	DirectSets   float64 `json:"direct_sets"`
+	IndirectSets float64 `json:"indirect_sets"`
+	WeightedSets float64 `json:"weighted_sets"`
 }
 
 type WorkoutWrite struct {
 	ID                               string
+	IdempotencyKey                   string
 	ClientUpdatedAt                  int64
 	Date, Title, WorkoutType, Source string
 	PlannedSessionID                 *string
@@ -178,28 +199,36 @@ type Illness struct {
 	Symptoms []string `json:"symptoms,omitempty"`
 }
 type Checkin struct {
-	ID           string     `json:"checkin_id"`
-	RecordedAt   string     `json:"recorded_at"`
-	LocalDate    string     `json:"local_date"`
-	Timezone     string     `json:"timezone"`
-	Energy       *int       `json:"energy,omitempty"`
-	Fatigue      *int       `json:"fatigue,omitempty"`
-	Motivation   *int       `json:"motivation,omitempty"`
-	SleepQuality *int       `json:"sleep_quality,omitempty"`
-	Stress       *int       `json:"stress,omitempty"`
-	Soreness     []PainArea `json:"soreness,omitempty"`
-	Pain         []PainArea `json:"pain,omitempty"`
-	Illness      Illness    `json:"illness"`
-	Notes        *string    `json:"notes,omitempty"`
+	ID            string     `json:"checkin_id"`
+	RecordedAt    string     `json:"recorded_at"`
+	LocalDate     string     `json:"local_date"`
+	Timezone      string     `json:"timezone"`
+	Energy        *int       `json:"energy,omitempty"`
+	Fatigue       *int       `json:"fatigue,omitempty"`
+	Motivation    *int       `json:"motivation,omitempty"`
+	SleepQuality  *int       `json:"sleep_quality,omitempty"`
+	Stress        *int       `json:"stress,omitempty"`
+	Soreness      []PainArea `json:"soreness,omitempty"`
+	Pain          []PainArea `json:"pain,omitempty"`
+	Illness       Illness    `json:"illness"`
+	Notes         *string    `json:"notes,omitempty"`
+	SchemaVersion int        `json:"schema_version,omitempty"`
+	LegFreshness  *int       `json:"leg_freshness,omitempty"`
+	PainPresent   *bool      `json:"pain_present,omitempty"`
+	NeedsDetail   []string   `json:"needs_detail,omitempty"`
 }
 type CheckinWrite struct {
 	ID                                                string
+	IdempotencyKey                                    string
 	ClientUpdatedAt                                   int64
 	RecordedAt                                        time.Time
 	Energy, Fatigue, Motivation, SleepQuality, Stress *int
 	Soreness, Pain                                    []PainArea
 	Illness                                           Illness
 	Notes                                             *string
+	SchemaVersion                                     int
+	LegFreshness                                      *int
+	PainPresent                                       *bool
 }
 type CheckinWinner struct {
 	Checkin             Checkin `json:"checkin"`
@@ -271,22 +300,24 @@ type PlanResult struct {
 	Sessions []PlannedSession `json:"sessions"`
 }
 type TrainingPlan struct {
-	ID          string           `json:"plan_id"`
-	AthleteID   string           `json:"athlete_id,omitempty"`
-	Title       string           `json:"title"`
-	Description *string          `json:"description,omitempty"`
-	Goal        json.RawMessage  `json:"goal"`
-	Status      string           `json:"status"`
-	StartDate   *string          `json:"start_date,omitempty"`
-	EndDate     *string          `json:"end_date,omitempty"`
-	Source      string           `json:"source"`
-	SourceRef   *string          `json:"source_ref,omitempty"`
-	CreatedAt   int64            `json:"created_at,omitempty"`
-	SyncSeq     int64            `json:"sync_seq"`
-	Sessions    []PlannedSession `json:"sessions,omitempty"`
+	ID             string           `json:"plan_id"`
+	IdempotencyKey string           `json:"-"`
+	AthleteID      string           `json:"athlete_id,omitempty"`
+	Title          string           `json:"title"`
+	Description    *string          `json:"description,omitempty"`
+	Goal           json.RawMessage  `json:"goal"`
+	Status         string           `json:"status"`
+	StartDate      *string          `json:"start_date,omitempty"`
+	EndDate        *string          `json:"end_date,omitempty"`
+	Source         string           `json:"source"`
+	SourceRef      *string          `json:"source_ref,omitempty"`
+	CreatedAt      int64            `json:"created_at,omitempty"`
+	SyncSeq        int64            `json:"sync_seq"`
+	Sessions       []PlannedSession `json:"sessions,omitempty"`
 }
 type PlannedSession struct {
 	ID                  string              `json:"session_id"`
+	IdempotencyKey      string              `json:"-"`
 	PlanID              string              `json:"plan_id"`
 	AthleteID           string              `json:"athlete_id,omitempty"`
 	Date                string              `json:"date"`
@@ -302,10 +333,27 @@ type PlannedSession struct {
 	CompletedWorkoutID  *string             `json:"completed_workout_id,omitempty"`
 	Completion          *ActivityCompletion `json:"completion,omitempty"`
 	Steps               []PlannedStep       `json:"steps,omitempty"`
+	Groups              []PlannedStepGroup  `json:"groups,omitempty"`
+}
+
+// PlannedStepGroup describes a non-nested set of exercise steps executed
+// member-by-member for each round. The repository validates all references
+// against the containing session before persisting the group.
+type PlannedStepGroup struct {
+	ID               string  `json:"group_id"`
+	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
+	PlannedSessionID string  `json:"planned_session_id,omitempty"`
+	AthleteID        string  `json:"athlete_id,omitempty"`
+	Label            string  `json:"label,omitempty"`
+	Mode             string  `json:"mode"`
+	Rounds           int     `json:"rounds"`
+	StepSequenceNos  []int   `json:"step_sequence_nos"`
+	Notes            *string `json:"notes,omitempty"`
 }
 
 type PlannedStep struct {
 	ID               string          `json:"step_id"`
+	IdempotencyKey   string          `json:"idempotency_key,omitempty"`
 	PlannedSessionID string          `json:"planned_session_id,omitempty"`
 	AthleteID        string          `json:"athlete_id,omitempty"`
 	SequenceNo       int             `json:"sequence_no"`
@@ -368,14 +416,231 @@ type ActivityCompletion struct {
 	DurationMinutes *float64 `json:"duration_minutes,omitempty"`
 	DistanceKM      *float64 `json:"distance_km,omitempty"`
 }
+
+type TimelineQuery struct {
+	From, To         string
+	IncludeUnplanned bool
+	IncludeEntries   bool
+	Order            string
+	Limit            int
+	Cursor           string
+}
+
+type TimelineResult struct {
+	Days       []TimelineDay `json:"days"`
+	NextCursor *string       `json:"next_cursor,omitempty"`
+	DataStatus DataStatus    `json:"data_status"`
+	Warnings   []Warning     `json:"warnings,omitempty"`
+	Method     Method        `json:"method"`
+}
+
+type TimelineDay struct {
+	Date      string              `json:"date"`
+	Planned   []PlannedSession    `json:"planned"`
+	Completed []TimelineCompleted `json:"completed"`
+	Links     []TimelineLink      `json:"links"`
+	Status    string              `json:"status"`
+	Totals    TimelineTotals      `json:"totals"`
+}
+
+type TimelineCompleted struct {
+	Kind             string          `json:"kind"`
+	ID               string          `json:"id"`
+	Date             string          `json:"date"`
+	Title            string          `json:"title"`
+	Category         string          `json:"category,omitempty"`
+	SessionType      string          `json:"session_type,omitempty"`
+	DurationMinutes  *float64        `json:"duration_minutes,omitempty"`
+	DistanceKM       *float64        `json:"distance_km,omitempty"`
+	GarminLoad       *float64        `json:"garmin_load,omitempty"`
+	ActivityID       *string         `json:"activity_id,omitempty"`
+	WorkoutID        *string         `json:"workout_id,omitempty"`
+	PlannedSessionID *string         `json:"planned_session_id,omitempty"`
+	Entries          []StrengthEntry `json:"entries,omitempty"`
+}
+
+type TimelineLink struct {
+	PlannedSessionID *string  `json:"planned_session_id,omitempty"`
+	ActivityID       *string  `json:"activity_id,omitempty"`
+	WorkoutID        *string  `json:"workout_id,omitempty"`
+	Status           string   `json:"status"`
+	Method           string   `json:"method"`
+	Score            *float64 `json:"score,omitempty"`
+	Margin           *float64 `json:"margin,omitempty"`
+	CandidateIDs     []string `json:"candidate_ids,omitempty"`
+}
+
+type TimelineTotals struct {
+	DurationMinutes *float64 `json:"duration_minutes,omitempty"`
+	DistanceKM      *float64 `json:"distance_km,omitempty"`
+	GarminLoad      *float64 `json:"garmin_load,omitempty"`
+}
+
+type ActivityIntervalsQuery struct {
+	ActivityID        string
+	IncludeLaps       bool
+	IncludeRecoveries bool
+	MaxSegments       int
+}
+
+type ActivityIntervalsResult struct {
+	ActivityID string            `json:"activity_id"`
+	Segments   []IntervalSegment `json:"segments"`
+	Warnings   []Warning         `json:"warnings,omitempty"`
+	Method     Method            `json:"method"`
+}
+
+type IntervalSegment struct {
+	Sequence             int      `json:"sequence"`
+	SourceID             string   `json:"source_id"`
+	Classification       string   `json:"classification"`
+	StartElapsed         float64  `json:"start_elapsed_seconds"`
+	DurationSeconds      *float64 `json:"duration_seconds,omitempty"`
+	DurationDisplay      string   `json:"duration_display,omitempty"`
+	DistanceKM           *float64 `json:"distance_km,omitempty"`
+	PaceMinPerKM         *float64 `json:"pace_min_per_km,omitempty"`
+	PaceDisplay          string   `json:"pace_display,omitempty"`
+	AverageHR            *float64 `json:"average_hr,omitempty"`
+	EndHR                *float64 `json:"end_hr,omitempty"`
+	MaxHR                *float64 `json:"max_hr,omitempty"`
+	AveragePower         *float64 `json:"average_power,omitempty"`
+	MaxPower             *float64 `json:"max_power,omitempty"`
+	Cadence              *float64 `json:"cadence,omitempty"`
+	RecoveryHRDrop       *float64 `json:"recovery_hr_drop,omitempty"`
+	ClassificationSource string   `json:"classification_source"`
+	Confidence           string   `json:"confidence"`
+}
+
+type ExerciseProgressQuery struct {
+	ExerciseKey    string
+	From, To       string
+	IncludeWarmups bool
+	Limit          int
+	Cursor         string
+}
+
+type ExerciseDefinitionOutput struct {
+	Key                 string   `json:"key"`
+	Aliases             []string `json:"aliases"`
+	DirectMuscles       []string `json:"direct_muscles"`
+	IndirectMuscles     []string `json:"indirect_muscles"`
+	SupportsE1RM        bool     `json:"supports_e1rm"`
+	AliasUsed           string   `json:"alias_used,omitempty"`
+	NormalizationStatus string   `json:"normalization_status"`
+}
+
+type ExerciseProgress struct {
+	Exercise   ExerciseDefinitionOutput  `json:"exercise"`
+	Sessions   []ExerciseProgressSession `json:"sessions"`
+	RepPRs     []ExerciseRepPR           `json:"rep_prs"`
+	Trend      ExerciseTrendResult       `json:"trend"`
+	NextCursor *string                   `json:"next_cursor,omitempty"`
+	Method     Method                    `json:"method"`
+}
+
+type ExerciseProgressSession struct {
+	WorkoutID              string                `json:"workout_id"`
+	Date                   string                `json:"date"`
+	Title                  string                `json:"title"`
+	Sets                   []ExerciseProgressSet `json:"sets"`
+	BestSet                *ExerciseProgressSet  `json:"best_set,omitempty"`
+	VolumeLoadKG           *float64              `json:"volume_load_kg,omitempty"`
+	NormalizedVolumeLoadKG *float64              `json:"normalized_volume_load_kg,omitempty"`
+}
+
+type ExerciseProgressSet struct {
+	EntryID         string   `json:"entry_id"`
+	Reps            *float64 `json:"reps,omitempty"`
+	NormalizedReps  *float64 `json:"normalized_reps,omitempty"`
+	LoadKG          *float64 `json:"load_kg,omitempty"`
+	LoadBasis       *string  `json:"load_basis,omitempty"`
+	LoadSemantics   string   `json:"load_semantics"`
+	RIR             *float64 `json:"rir,omitempty"`
+	Estimated1RMKG  *float64 `json:"estimated_1rm_kg,omitempty"`
+	DurationDisplay string   `json:"duration_display,omitempty"`
+}
+
+type ExerciseRepPR struct {
+	Reps    int      `json:"reps"`
+	LoadKG  float64  `json:"load_kg"`
+	RIRMin  *float64 `json:"rir_min,omitempty"`
+	RIRMax  *float64 `json:"rir_max,omitempty"`
+	EntryID string   `json:"entry_id"`
+	Date    string   `json:"date"`
+}
+
+type ExerciseTrendResult struct {
+	Label          string   `json:"label"`
+	LatestLoadKG   *float64 `json:"latest_load_kg,omitempty"`
+	PreviousLoadKG *float64 `json:"previous_load_kg,omitempty"`
+	ChangeKG       *float64 `json:"change_kg,omitempty"`
+	Samples        int      `json:"samples"`
+	ComparableReps *int     `json:"comparable_reps,omitempty"`
+	Method         string   `json:"method"`
+}
+
+type ReadinessQuery struct {
+	AsOf                    string
+	SessionDate             string
+	ProposedSessionType     string
+	ProposedDurationMinutes int
+	ProposedIntensity       string
+}
+
+type ReadinessResult struct {
+	Recommendation         string              `json:"recommendation"`
+	Confidence             string              `json:"confidence"`
+	Reasons                []ReadinessReason   `json:"reasons"`
+	Counterpoints          []ReadinessReason   `json:"counterpoints"`
+	RulesEvaluated         []string            `json:"rules_evaluated"`
+	RulesUnavailable       []string            `json:"rules_unavailable"`
+	RelevantRecentSessions []TimelineCompleted `json:"relevant_recent_sessions"`
+	RecoverySignals        *RecoveryStatus     `json:"recovery_signals"`
+	LoadContext            *TrainingLoadStatus `json:"load_context"`
+	NearbyPlan             []PlannedSession    `json:"nearby_plan"`
+	Method                 Method              `json:"method"`
+}
+
+type ReadinessReason struct {
+	Rule        string   `json:"rule"`
+	Actual      any      `json:"actual"`
+	Threshold   any      `json:"threshold"`
+	SourceIDs   []string `json:"source_entity_ids"`
+	Date        string   `json:"date"`
+	Explanation string   `json:"explanation"`
+}
+
+type WorkoutPatchOperation struct {
+	Op                   string
+	ActivityID           *string
+	EntryID              *string
+	RIR                  *float64
+	ExerciseKey          *string
+	Laterality           *string
+	RepsPerSide          *bool
+	LoadBasis            *string
+	LoadPerLimbKG        *float64
+	TotalExternalLoadKG  *float64
+	AddedLoadKG          *float64
+	DirectMuscleGroups   []string
+	IndirectMuscleGroups []string
+	Text                 *string
+}
+
+type PatchWorkoutResult struct {
+	Workout  WorkoutWinner  `json:"workout"`
+	Conflict *WorkoutWinner `json:"conflict,omitempty"`
+}
 type PlannedSessionWrite struct {
 	ID, PlanID                         string
+	IdempotencyKey, PlanIdempotencyKey string
 	ClientUpdatedAt                    int64
 	Date, Sport, SessionType, Priority string
 	Targets                            PlannedTargets
 	Notes                              *string
 	Title, Description                 string
 	Steps                              []PlannedStep
+	Groups                             []PlannedStepGroup
 }
 
 type PlanWrite struct {
@@ -499,8 +764,11 @@ type Change struct {
 }
 type Method struct {
 	Name            string `json:"name"`
+	Version         int    `json:"version,omitempty"`
 	ValidSamples    int    `json:"valid_samples,omitempty"`
 	RequiredSamples int    `json:"required_samples,omitempty"`
+	InputsUsed      int    `json:"inputs_used,omitempty"`
+	InputsAvailable int    `json:"inputs_available,omitempty"`
 	Confidence      string `json:"confidence,omitempty"`
 }
 
@@ -524,42 +792,130 @@ type ContextStatus struct {
 	TrainingLoad *TrainingLoadStatus `json:"training_load,omitempty"`
 }
 type RecoveryStatus struct {
-	Classification         string         `json:"classification"`
-	Confidence             string         `json:"confidence"`
-	SleepScore             *float64       `json:"sleep_score,omitempty"`
-	SleepHours             *float64       `json:"sleep_hours,omitempty"`
-	OvernightHRV           *float64       `json:"overnight_hrv,omitempty"`
-	HRVBaseline            *float64       `json:"hrv_baseline,omitempty"`
-	HRVRatio               *float64       `json:"hrv_ratio,omitempty"`
-	RestingHeartRate       *float64       `json:"resting_heart_rate,omitempty"`
-	RHRBaseline            *float64       `json:"rhr_baseline,omitempty"`
-	RHRDelta               *float64       `json:"rhr_delta,omitempty"`
-	BodyBatteryAtWake      *float64       `json:"body_battery_at_wake,omitempty"`
-	AverageStressYesterday *float64       `json:"average_stress_yesterday,omitempty"`
-	SubjectiveFatigue      *int           `json:"subjective_fatigue,omitempty"`
-	Soreness               []PainArea     `json:"soreness,omitempty"`
-	Method                 RecoveryMethod `json:"method"`
+	Classification         string                 `json:"classification"`
+	Confidence             string                 `json:"confidence"`
+	Sleep                  RecoverySleepEvidence  `json:"sleep"`
+	HRV                    RecoverySignalEvidence `json:"hrv"`
+	RestingHeartRateSignal RecoverySignalEvidence `json:"resting_heart_rate"`
+	SleepScore             *float64               `json:"sleep_score,omitempty"`
+	SleepHours             *float64               `json:"sleep_hours,omitempty"` // Deprecated alias for sleep.total_24h.
+	OvernightHRV           *float64               `json:"overnight_hrv,omitempty"`
+	HRVBaseline            *float64               `json:"hrv_baseline,omitempty"`
+	HRVRatio               *float64               `json:"hrv_ratio,omitempty"`
+	RestingHeartRate       *float64               `json:"resting_heart_rate_value,omitempty"` // Deprecated flattened alias.
+	RHRBaseline            *float64               `json:"rhr_baseline,omitempty"`
+	RHRDelta               *float64               `json:"rhr_delta,omitempty"`
+	BodyBatteryAtWake      *float64               `json:"body_battery_at_wake,omitempty"`
+	AverageStressYesterday *float64               `json:"average_stress_yesterday,omitempty"`
+	SubjectiveFatigue      *int                   `json:"subjective_fatigue,omitempty"`
+	Soreness               []PainArea             `json:"soreness,omitempty"`
+	Method                 RecoveryMethod         `json:"method"`
+}
+
+type RecoverySleepEvidence struct {
+	MainHours        *float64 `json:"main_hours"`
+	NapHours         *float64 `json:"nap_hours"`
+	Total24H         *float64 `json:"total_24h"`
+	Score            *float64 `json:"score"`
+	Available        bool     `json:"available"`
+	ObservedDate     *string  `json:"observed_date"`
+	LastObservedDate *string  `json:"last_observed_date"`
+	AgeDays          *int     `json:"age_days"`
+	Stale            bool     `json:"stale"`
+	SourceStatus     string   `json:"source_status"`
+}
+
+type RecoverySignalEvidence struct {
+	Value            *float64 `json:"value"`
+	Baseline         *float64 `json:"baseline"`
+	Ratio            *float64 `json:"ratio,omitempty"`
+	Delta            *float64 `json:"delta,omitempty"`
+	Available        bool     `json:"available"`
+	ObservedDate     *string  `json:"observed_date"`
+	LastObservedDate *string  `json:"last_observed_date"`
+	AgeDays          *int     `json:"age_days"`
+	Stale            bool     `json:"stale"`
+	SourceStatus     string   `json:"source_status"`
+}
+
+type RecoveryEvaluation struct {
+	Rule      string `json:"rule"`
+	Value     any    `json:"value"`
+	Operator  string `json:"operator"`
+	Threshold any    `json:"threshold"`
+	Matched   bool   `json:"matched"`
 }
 type RecoveryMethod struct {
-	Name                string   `json:"name"`
-	ValidPrimarySignals int      `json:"valid_primary_signals"`
-	NegativeSignals     []string `json:"negative_signals"`
+	Name                string               `json:"name"`
+	Version             int                  `json:"version"`
+	ValidPrimarySignals int                  `json:"valid_primary_signals"`
+	InputsUsed          int                  `json:"inputs_used"`
+	InputsAvailable     int                  `json:"inputs_available"`
+	Confidence          string               `json:"confidence"`
+	NegativeSignals     []string             `json:"negative_signals"`
+	Evaluations         []RecoveryEvaluation `json:"evaluations"`
+	UnavailableRules    []string             `json:"unavailable_rules"`
 }
 type TrainingLoadStatus struct {
-	Last7Days               *float64   `json:"last_7_days,omitempty"`
-	Previous7Days           *float64   `json:"previous_7_days,omitempty"`
-	Last28Days              *float64   `json:"last_28_days,omitempty"`
-	ChronicWeeklyAverage    *float64   `json:"chronic_weekly_average,omitempty"`
-	AcuteChronicRatio       *float64   `json:"acute_chronic_ratio,omitempty"`
-	HardSessionsLast7Days   int        `json:"hard_sessions_last_7_days"`
-	ConsecutiveTrainingDays int        `json:"consecutive_training_days"`
-	Classification          string     `json:"classification"`
-	Method                  LoadMethod `json:"method"`
+	Last7Days                    *float64              `json:"last_7_days,omitempty"`
+	Previous7Days                *float64              `json:"previous_7_days,omitempty"`
+	Last28Days                   *float64              `json:"last_28_days,omitempty"`
+	ChronicWeeklyAverage         *float64              `json:"chronic_weekly_average,omitempty"`
+	AcuteChronicRatio            *float64              `json:"acute_chronic_ratio,omitempty"`
+	HardSessionsLast7Days        int                   `json:"hard_sessions_last_7_days"`
+	ConsecutiveTrainingDays      int                   `json:"consecutive_training_days"`
+	Classification               string                `json:"classification"`
+	RunningDistance7Days         *float64              `json:"running_distance_7_days,omitempty"`
+	RunningDistance14Days        *float64              `json:"running_distance_14_days,omitempty"`
+	RunningDistance28Days        *float64              `json:"running_distance_28_days,omitempty"`
+	RunningDuration7Days         *float64              `json:"running_duration_7_days,omitempty"`
+	RunningDuration14Days        *float64              `json:"running_duration_14_days,omitempty"`
+	RunningDuration28Days        *float64              `json:"running_duration_28_days,omitempty"`
+	RunningDistanceChangePercent *float64              `json:"running_distance_change_percent,omitempty"`
+	RunningGarminLoad            *float64              `json:"running_garmin_load,omitempty"`
+	TotalGarminLoad              *float64              `json:"total_garmin_load,omitempty"`
+	HardSessions                 []HardSessionEvidence `json:"hard_sessions,omitempty"`
+	DoubleSessionDays7           int                   `json:"double_session_days_7"`
+	DoubleSessionDays28          int                   `json:"double_session_days_28"`
+	DoubleSessionEvidence        []DoubleSessionDay    `json:"double_session_evidence,omitempty"`
+	DaysSinceRestDay             *int                  `json:"days_since_rest_day,omitempty"`
+	StrengthContext              StrengthContext       `json:"strength_context"`
+	Method                       LoadMethod            `json:"method"`
+}
+
+type HardSessionEvidence struct {
+	ActivityID string              `json:"activity_id,omitempty"`
+	WorkoutID  string              `json:"workout_id,omitempty"`
+	Date       string              `json:"date"`
+	Hard       bool                `json:"hard"`
+	Reasons    []HardSessionReason `json:"reasons"`
+	Method     string              `json:"method"`
+}
+
+type HardSessionReason struct {
+	Rule      string  `json:"rule"`
+	Value     float64 `json:"value"`
+	Threshold float64 `json:"threshold"`
+}
+
+type DoubleSessionDay struct {
+	Date       string   `json:"date"`
+	SessionIDs []string `json:"session_ids"`
+	Categories []string `json:"categories"`
 }
 type LoadMethod struct {
 	Name               string `json:"name"`
 	ActivitiesWithLoad int    `json:"activities_with_load"`
 	TotalActivities    int    `json:"total_activities"`
+	InputsUsed         int    `json:"inputs_used"`
+	InputsAvailable    int    `json:"inputs_available"`
+	Confidence         string `json:"confidence"`
+}
+type StrengthContext struct {
+	Sessions       int    `json:"sessions"`
+	WorkingSets    int    `json:"working_sets"`
+	HighEffortSets int    `json:"high_effort_sets"`
+	Method         string `json:"method"`
 }
 type RecentTraining struct {
 	Runs     TrainingAggregate `json:"runs"`

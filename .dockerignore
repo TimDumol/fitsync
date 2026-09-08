@@ -1,6 +1,5 @@
 .git
 .private
-.neon-connect-string
 data/
 secrets/
 *.db

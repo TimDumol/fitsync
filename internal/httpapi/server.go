@@ -31,6 +31,11 @@ func NewServerWithAuth(cfg config.Config, logger *slog.Logger, api ServerInterfa
 	return newServer(cfg, logger, api, ingestion, mcpHandler, issuer)
 }
 
+type mobileRouteProvider interface {
+	MobileBatchHandler() http.Handler
+	MobileStatusHandler() http.Handler
+}
+
 func newServer(cfg config.Config, logger *slog.Logger, api ServerInterface, ingestion, mcpHandler http.Handler, issuer string) *http.Server {
 	if logger == nil {
 		logger = slog.Default()
@@ -48,6 +53,10 @@ func newServer(cfg config.Config, logger *slog.Logger, api ServerInterface, inge
 	}
 	if ingestion != nil {
 		mux.Handle("POST /api/v1/ingest/garmin/batch", ingestion)
+		if mobile, ok := ingestion.(mobileRouteProvider); ok {
+			mux.Handle("POST /api/v2/athletes/{athlete_id}/ingest/garmin/batch", mobile.MobileBatchHandler())
+			mux.Handle("GET /api/v2/athletes/{athlete_id}/garmin/sync-status", mobile.MobileStatusHandler())
+		}
 	}
 	h := requestLogging(logger, mux)
 	return &http.Server{

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+	"github.com/timdumol/fitsync/internal/exercisecatalog"
 	"github.com/timdumol/fitsync/internal/fitnessrepo"
 )
 
@@ -27,9 +28,11 @@ const (
 
 // API implements the generated OpenAPI server interface.
 type API struct {
-	db   *sql.DB
-	auth Authorizer
-	repo *fitnessrepo.Repository
+	db           *sql.DB
+	auth         Authorizer
+	repo         *fitnessrepo.Repository
+	garminBatch  http.Handler
+	garminStatus http.Handler
 }
 
 // AuthMiddleware lets the production transport authenticate once per HTTP
@@ -49,6 +52,17 @@ func NewAPI(database *sql.DB, authorizer Authorizer) *API {
 		authorizer = FakeHouseholdAuthorizer{}
 	}
 	return &API{db: database, auth: authorizer, repo: fitnessrepo.New(database, time.Now)}
+}
+
+// SetGarminRoutes lets the generated OpenAPI adapter and the small explicit
+// server mux share the ingestion implementation without duplicating parsing
+// or transaction logic in the general API layer.
+func (a *API) SetGarminRoutes(provider interface {
+	MobileBatchHandler() http.Handler
+	MobileStatusHandler() http.Handler
+}) {
+	a.garminBatch = provider.MobileBatchHandler()
+	a.garminStatus = provider.MobileStatusHandler()
 }
 
 // Database exposes the shared store to application services such as MCP.
@@ -488,6 +502,54 @@ func payloadJSON(value any, emptyObject bool) (string, error) {
 	return string(encoded), nil
 }
 
+func normalizeRawEntryPayload(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return raw, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload == nil {
+		return "", errors.New("invalid_input: entry payload must be an object")
+	}
+	key, keyPresent, err := rawOptionalString(payload, "exercise_key")
+	if err != nil {
+		return "", errors.New("invalid_input: exercise_key")
+	}
+	name, namePresent, err := rawOptionalString(payload, "exercise_name")
+	if err != nil {
+		return "", errors.New("invalid_input: exercise_name")
+	}
+	if !keyPresent && !namePresent {
+		return raw, nil
+	}
+	resolution, err := exercisecatalog.Resolve(key, name)
+	if err != nil {
+		return "", err
+	}
+	if resolution.Key == nil {
+		payload["exercise_key"] = []byte("null")
+	} else {
+		payload["exercise_key"], _ = json.Marshal(*resolution.Key)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", errors.New("internal_error: entry payload")
+	}
+	return string(encoded), nil
+}
+
+func rawOptionalString(payload map[string]json.RawMessage, field string) (*string, bool, error) {
+	raw, present := payload[field]
+	if !present || string(raw) == "null" {
+		return nil, present, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, true, err
+	}
+	return &value, true, nil
+}
+
 type storedSession struct {
 	id, athleteID, workoutDate, title, source string
 	sourceRef, metadataRaw                    sql.NullString
@@ -629,6 +691,10 @@ func applyEntry(ctx context.Context, tx *sql.Tx, mutation SyncMutation, syncedAt
 		if err != nil {
 			return SyncChange{}, err
 		}
+		payload, err = normalizeRawEntryPayload(payload)
+		if err != nil {
+			return SyncChange{}, err
+		}
 		var deletedAt any
 		if mutation.Deleted {
 			deletedAt = syncedAt
@@ -671,6 +737,10 @@ func applyEntry(ctx context.Context, tx *sql.Tx, mutation SyncMutation, syncedAt
 			payload := current.payloadRaw
 			if mutation.Payload != nil {
 				payload, err = payloadJSON(mutation.Payload, false)
+				if err != nil {
+					return SyncChange{}, err
+				}
+				payload, err = normalizeRawEntryPayload(payload)
 				if err != nil {
 					return SyncChange{}, err
 				}

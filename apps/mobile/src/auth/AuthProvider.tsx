@@ -6,9 +6,11 @@ import * as WebBrowser from 'expo-web-browser';
 import { useSQLiteContext } from 'expo-sqlite';
 import { ApiClient, ApiError } from '../api/client';
 import { MeResponse } from '../api/generated';
-import { oauthClientID, oauthResource, pocketIDIssuer } from '../config';
+import { e2eMode, oauthClientID, oauthResource, pocketIDIssuer } from '../config';
+import { E2EApiClient } from '../api/e2e';
 import { clearLocalData, selectedAthleteID as readSelectedAthleteID, setSelectedAthleteID as persistSelectedAthleteID } from '../db/repository';
 import { clearTokens, readTokens, saveTokens, StoredTokens } from './tokenStore';
+import { appLog, errorForLog } from '../logging/app-logger';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -19,6 +21,7 @@ interface AuthValue {
   selectedAthleteID: string | null;
   setSelectedAthleteID: (id: string) => void;
   signIn: () => Promise<void>;
+  getAccessToken: (forceRefresh?: boolean) => Promise<string>;
   logout: () => Promise<void>;
   authError: string | null;
   clearAuthError: () => void;
@@ -127,18 +130,31 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
   const callbackReceived = useRef(false);
   const db = useSQLiteContext();
 
-  const tokenProvider = useCallback(async () => {
+  const getAccessToken = useCallback(async (forceRefresh = false) => {
     const current = tokens ?? await readTokens();
-    if (!current) return null;
-    if (current.expiresAt > Date.now() + 60_000 || !current.refreshToken) return current.accessToken;
+    if (!current) throw new Error('Session expired');
+    if (!forceRefresh && (current.expiresAt > Date.now() + 60_000 || !current.refreshToken)) return current.accessToken;
+    if (!current.refreshToken) return current.accessToken;
+    appLog('debug', 'auth', 'Refreshing FitSync access token', { forced: forceRefresh });
     const refreshed = await refreshAccessToken(current);
     await saveTokens(refreshed);
     setTokens(refreshed);
     return refreshed.accessToken;
   }, [tokens]);
-  const api = useMemo(() => new ApiClient(tokenProvider), [tokenProvider]);
+  const tokenProvider = useCallback(async () => getAccessToken(), [getAccessToken]);
+  const e2eApi = useMemo(() => e2eMode ? new E2EApiClient() : null, []);
+  const api = useMemo(() => e2eApi ?? new ApiClient(tokenProvider), [e2eApi, tokenProvider]);
 
   useEffect(() => {
+    if (e2eMode) {
+      let cancelled = false;
+      void clearLocalData(db).then(() => {
+        if (cancelled) return;
+        setTokens({ accessToken: 'e2e-fixture-token', expiresAt: Date.now() + 60 * 60 * 1000 });
+        setTokensLoaded(true);
+      });
+      return () => { cancelled = true; };
+    }
     let cancelled = false;
     void readTokens().then((value) => {
       if (cancelled) return;
@@ -150,10 +166,11 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
       setTokens(null);
       setTokensLoaded(true);
       setAuthError(describeError('Reading the saved sign-in', error));
+      appLog('error', 'auth', 'Reading the saved sign-in failed', { error: errorForLog(error) });
       setReady(true);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [db]);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,6 +191,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
       if (cancelled) return;
       setMe(null);
       setAuthError(describeError('Loading your FitSync account', error));
+      appLog('error', 'auth', 'Loading the FitSync account failed', { error: errorForLog(error) });
       // Keep tokens for server-side authorization and network errors so the
       // user can see the actual failure and retry. Only a rejected credential
       // should force a fresh OAuth sign-in.
@@ -237,6 +255,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
 
   const signIn = useCallback(async () => {
     setAuthError(null);
+    appLog('info', 'auth', 'Pocket ID sign-in started');
     if (!request) {
       setAuthError('Sign-in is still initializing. Please wait a moment and try again.');
       return;
@@ -262,12 +281,13 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
     } catch (error) {
       authInProgress.current = false;
       setAuthError(describeError('Opening Pocket ID sign-in', error));
+      appLog('error', 'auth', 'Opening Pocket ID sign-in failed', { error: errorForLog(error) });
     }
   }, [completeAuthorization, promptAsync, request]);
   const logout = useCallback(async () => { await clearTokens(); await clearLocalData(); setTokens(null); setMe(null); setSelected(null); setAuthError(null); setReady(true); }, []);
   const setSelectedAthleteID = useCallback((id: string) => { setSelected(id); void persistSelectedAthleteID(db, id); }, [db]);
   const clearAuthError = useCallback(() => setAuthError(null), []);
-  return <AuthContext.Provider value={{ ready, signedIn: Boolean(tokens && me), me, selectedAthleteID, setSelectedAthleteID, signIn, logout, authError, clearAuthError, api }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ ready, signedIn: Boolean(tokens && me), me, selectedAthleteID, setSelectedAthleteID, signIn, getAccessToken, logout, authError, clearAuthError, api }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthValue { const value = useContext(AuthContext); if (!value) throw new Error('useAuth must be used inside AuthProvider'); return value; }

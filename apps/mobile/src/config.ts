@@ -34,3 +34,7 @@ export const oauthResource = publicHTTPSURL(
 );
 
 export const oauthClientID = process.env.EXPO_PUBLIC_OAUTH_CLIENT_ID?.trim() || 'fitsync-mobile';
+
+// This is only enabled by the dedicated E2E build script. Normal builds never
+// set it, so they always use Pocket ID and the configured API.
+export const e2eMode = process.env.EXPO_PUBLIC_E2E === '1';

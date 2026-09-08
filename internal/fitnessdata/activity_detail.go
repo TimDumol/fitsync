@@ -1,7 +1,9 @@
 package fitnessdata
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -21,12 +23,21 @@ func DecodeActivityDetail(dataset string, payload json.RawMessage) (DecoderResul
 	result.Splits = decodeSplits(cleanObject)
 	result.HRZones = decodeZones(cleanObject, "heartRateZones", "heart_rate_zones", "hrZones", "hr_zones")
 	result.PowerZones = decodeZones(cleanObject, "powerZones", "power_zones", "powerInTimezones", "power_in_timezones")
-	result.Metrics = decodeMetrics(cleanObject)
+	if len(result.HRZones) > 0 {
+		result.HRZoneProvenance = zoneProvenance("heart_rate", result.Summary.Date, result.HRZones)
+	}
+	if len(result.PowerZones) > 0 {
+		result.PowerZoneProvenance = zoneProvenance("power", result.Summary.Date, result.PowerZones)
+	}
+	var metricWarnings []NormalizationWarning
+	result.Metrics, metricWarnings = decodeMetrics(cleanObject)
 	result.SourcePoints = len(result.Metrics)
 	result.ReturnedPoints = len(result.Metrics)
+	warnings := append([]NormalizationWarning(nil), metricWarnings...)
+	validateMetricDistances(result.Metrics, result.Summary.DistanceKM, &warnings)
 	return DecoderResult[ActivityDetail]{Value: result, Completeness: Availability{
 		"splits": len(result.Splits) > 0, "zones": len(result.HRZones) > 0 || len(result.PowerZones) > 0, "metrics": len(result.Metrics) > 0,
-	}}, nil
+	}, Warnings: warnings}, nil
 }
 
 func stripLocation(value any) any {
@@ -70,12 +81,26 @@ func decodeSplits(object map[string]any) []Split {
 		if v, ok := number(m["split_number"]); ok {
 			n = int(*v)
 		}
-		result = append(result, Split{Number: n, DistanceKM: firstNumber(m, "distanceKm", "distance_km"), DurationSeconds: firstNumber(m, "duration", "duration_seconds"), PaceMinPerKM: firstNumber(m, "averagePace", "pace_min_per_km", "average_pace_min_per_km"), AverageHR: firstNumber(m, "averageHR", "average_hr", "average_heart_rate")})
+		split := Split{Number: n, SourceID: stringValue(nested(m, "lapId", "lap_id", "splitId", "split_id", "id")), StartElapsed: derefNumber(firstNumber(m, "startElapsedSeconds", "start_elapsed_seconds", "startTimeOffset")), DistanceKM: firstNumber(m, "distanceKm", "distance_km"), DurationSeconds: firstNumber(m, "duration", "duration_seconds"), PaceMinPerKM: firstNumber(m, "averagePace", "pace_min_per_km", "average_pace_min_per_km"), AverageHR: firstNumber(m, "averageHR", "average_hr", "average_heart_rate"), EndHR: firstNumber(m, "heartRateAtEnd", "heart_rate_at_end", "endHeartRate", "end_heart_rate", "end_hr"), MaxHR: firstNumber(m, "maxHR", "max_hr", "max_heart_rate"), AveragePower: firstNumber(m, "averagePower", "average_power"), MaxPower: firstNumber(m, "maxPower", "max_power"), Cadence: firstNumber(m, "averageCadence", "average_cadence", "cadence"), StepType: stringValue(nested(m, "stepType", "step_type", "intervalType", "interval_type"))}
+		if split.DurationSeconds != nil {
+			split.DurationDisplay = FormatDuration(*split.DurationSeconds)
+		}
+		if split.PaceMinPerKM != nil {
+			split.PaceDisplay = FormatPace(*split.PaceMinPerKM)
+		}
+		result = append(result, split)
 	}
 	if len(result) == 0 {
 		return nil
 	}
 	return result
+}
+
+func derefNumber(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func decodeZones(object map[string]any, paths ...string) []Zone {
@@ -108,14 +133,33 @@ func decodeZones(object map[string]any, paths ...string) []Zone {
 	return result
 }
 
-func decodeMetrics(object map[string]any) []MetricPoint {
+func zoneProvenance(metric, effectiveDate string, zones []Zone) *ZoneProvenance {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%s|", metric)
+	for _, zone := range zones {
+		_, _ = fmt.Fprintf(hash, "%d|", zone.Zone)
+		if zone.Low == nil {
+			_, _ = fmt.Fprint(hash, "null|")
+		} else {
+			_, _ = fmt.Fprintf(hash, "%.9g|", *zone.Low)
+		}
+		if zone.High == nil {
+			_, _ = fmt.Fprint(hash, "null|")
+		} else {
+			_, _ = fmt.Fprintf(hash, "%.9g|", *zone.High)
+		}
+	}
+	return &ZoneProvenance{ZoneModel: "unknown", ZoneSource: "garmin_activity_snapshot", EffectiveDate: effectiveDate, Version: fmt.Sprintf("sha256:%x", hash.Sum(nil))}
+}
+
+func decodeMetrics(object map[string]any) ([]MetricPoint, []NormalizationWarning) {
 	value := nested(object, "metricTimeSeries", "metric_time_series", "metrics", "metricsData")
 	if items, ok := value.([]any); ok {
 		return decodeMetricItems(items)
 	}
 	series, ok := value.(map[string]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	return decodeMetricSeries(series)
 }
@@ -151,14 +195,16 @@ func firstDetailArray(object map[string]any, paths ...string) ([]any, bool) {
 	return empty, found
 }
 
-func decodeMetricItems(items []any) []MetricPoint {
+func decodeMetricItems(items []any) ([]MetricPoint, []NormalizationWarning) {
 	result := make([]MetricPoint, 0, min(len(items), 5000))
+	warnings := []NormalizationWarning{}
 	for index, item := range items {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		point, recognized := decodeMetricItem(m)
+		point, recognized, itemWarnings := decodeMetricItem(m)
+		warnings = appendBoundedWarnings(warnings, itemWarnings...)
 		if !recognized {
 			continue
 		}
@@ -168,9 +214,9 @@ func decodeMetricItems(items []any) []MetricPoint {
 		result = append(result, point)
 	}
 	if len(result) == 0 {
-		return nil
+		return nil, warnings
 	}
-	return result
+	return result, warnings
 }
 
 type metricDescriptor struct {
@@ -179,14 +225,14 @@ type metricDescriptor struct {
 	Unit  string
 }
 
-func decodeMetricSeries(series map[string]any) []MetricPoint {
+func decodeMetricSeries(series map[string]any) ([]MetricPoint, []NormalizationWarning) {
 	descriptorItems, ok := detailArray(nested(series, "metricDescriptors", "metric_descriptors"))
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	rows, ok := detailArray(nested(series, "activityDetailMetrics", "activity_detail_metrics", "rows"), "items")
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	descriptors := make(map[int]metricDescriptor, len(descriptorItems))
 	for position, item := range descriptorItems {
@@ -203,6 +249,7 @@ func decodeMetricSeries(series map[string]any) []MetricPoint {
 		descriptors[index] = metricDescriptor{Key: stringValue(nested(m, "key", "name")), Index: index, Unit: stringValue(nested(m, "unit", "units"))}
 	}
 	result := make([]MetricPoint, 0, min(len(rows), 5000))
+	warnings := []NormalizationWarning{}
 	var timestampOrigin *float64
 	for rowIndex, item := range rows {
 		m, ok := item.(map[string]any)
@@ -212,15 +259,24 @@ func decodeMetricSeries(series map[string]any) []MetricPoint {
 		point := MetricPoint{}
 		recognized := false
 		hasElapsed := false
-		if direct, ok := decodeMetricItem(m); ok {
+		if direct, ok, itemWarnings := decodeMetricItem(m); ok {
 			point = direct
 			recognized = true
 			hasElapsed = hasDirectElapsed(m)
+			warnings = appendBoundedWarnings(warnings, itemWarnings...)
+		} else {
+			warnings = appendBoundedWarnings(warnings, itemWarnings...)
 		}
 		values, ok := detailArray(nested(m, "metrics", "values"))
 		if ok {
 			for position, raw := range values {
-				descriptor, exists := descriptors[position]
+				metricsIndex := position
+				if rawObject, isObject := raw.(map[string]any); isObject {
+					if value, valid := number(nested(rawObject, "metricsIndex", "metrics_index", "index")); valid {
+						metricsIndex = int(*value)
+					}
+				}
+				descriptor, exists := descriptors[metricsIndex]
 				if !exists {
 					continue
 				}
@@ -237,11 +293,13 @@ func decodeMetricSeries(series map[string]any) []MetricPoint {
 					}
 					continue
 				}
-				if assignMetric(&point, descriptor.Key, descriptor.Unit, raw) {
+				if assigned, warning := assignMetric(&point, descriptor.Key, descriptor.Unit, raw); assigned {
 					recognized = true
 					if strings.Contains(normalizedMetricKey(descriptor.Key), "duration") || strings.Contains(normalizedMetricKey(descriptor.Key), "elapsed") {
 						hasElapsed = true
 					}
+				} else if warning != nil {
+					warnings = appendBoundedWarnings(warnings, *warning)
 				}
 			}
 		}
@@ -254,14 +312,15 @@ func decodeMetricSeries(series map[string]any) []MetricPoint {
 		result = append(result, point)
 	}
 	if len(result) == 0 {
-		return nil
+		return nil, warnings
 	}
-	return result
+	return result, warnings
 }
 
-func decodeMetricItem(m map[string]any) (MetricPoint, bool) {
+func decodeMetricItem(m map[string]any) (MetricPoint, bool, []NormalizationWarning) {
 	point := MetricPoint{}
 	recognized := false
+	warnings := []NormalizationWarning{}
 	for _, path := range []string{"elapsedSeconds", "elapsed_seconds", "timeOffset"} {
 		if value := firstNumber(m, path); value != nil {
 			point.ElapsedSeconds = *value
@@ -271,6 +330,24 @@ func decodeMetricItem(m map[string]any) (MetricPoint, bool) {
 	}
 	if value := metricFirstNumber(m, "distanceKm", "distance_km"); value != nil {
 		point.DistanceKM, recognized = value, true
+	}
+	for _, key := range []string{"distance_m", "distance_meters"} {
+		if value := metricFirstNumber(m, key); value != nil {
+			*value /= 1000
+			point.DistanceKM, recognized = value, true
+			break
+		}
+	}
+	if value := metricFirstNumber(m, "distance"); value != nil && point.DistanceKM == nil {
+		unit := stringValue(nested(m, "distance_unit", "distanceUnit", "unit", "units"))
+		if normalizedDistanceUnit(unit) == "meter" {
+			*value /= 1000
+			point.DistanceKM, recognized = value, true
+		} else if normalizedDistanceUnit(unit) == "kilometer" {
+			point.DistanceKM, recognized = value, true
+		} else {
+			warnings = append(warnings, unknownDistanceUnitWarning(unit))
+		}
 	}
 	if value := metricFirstNumber(m, "heartRate", "heart_rate"); value != nil {
 		point.HeartRate, recognized = value, true
@@ -296,7 +373,7 @@ func decodeMetricItem(m map[string]any) (MetricPoint, bool) {
 	if value := metricFirstNumber(m, "temperature"); value != nil {
 		point.Temperature, recognized = value, true
 	}
-	return point, recognized
+	return point, recognized, warnings
 }
 
 func hasDirectElapsed(m map[string]any) bool {
@@ -346,18 +423,22 @@ func metricSeconds(value float64, unit string) float64 {
 	return value
 }
 
-func assignMetric(point *MetricPoint, key, unit string, raw any) bool {
+func assignMetric(point *MetricPoint, key, unit string, raw any) (bool, *NormalizationWarning) {
 	value := metricNumber(raw)
 	if value == nil {
-		return false
+		return false, nil
 	}
 	normalized := normalizedMetricKey(key)
 	switch {
 	case strings.Contains(normalized, "heartrate"):
 		point.HeartRate = value
 	case strings.Contains(normalized, "distance"):
-		if strings.Contains(normalizedMetricKey(unit), "meter") && !strings.Contains(normalizedMetricKey(unit), "kilometer") {
+		switch normalizedDistanceUnit(unit) {
+		case "meter":
 			*value /= 1000
+		case "kilometer":
+		default:
+			return false, ptrNormalizationWarning(unknownDistanceUnitWarning(unit))
 		}
 		point.DistanceKM = value
 	case strings.Contains(normalized, "pace"):
@@ -384,9 +465,74 @@ func assignMetric(point *MetricPoint, key, unit string, raw any) bool {
 	case strings.Contains(normalized, "duration") || strings.Contains(normalized, "elapsed"):
 		point.ElapsedSeconds = metricSeconds(*value, unit)
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
+}
+
+func normalizedDistanceUnit(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	switch normalized {
+	case "m", "meter", "meters":
+		return "meter"
+	case "km", "kilometer", "kilometers":
+		return "kilometer"
+	default:
+		return ""
+	}
+}
+
+func unknownDistanceUnitWarning(unit string) NormalizationWarning {
+	message := "Distance metric was not returned because its unit is missing or unknown."
+	if unit != "" {
+		message = "Distance metric was not returned because its unit is unknown."
+	}
+	return NormalizationWarning{Code: "UNKNOWN_METRIC_DISTANCE_UNIT", Severity: "warning", Message: message}
+}
+
+func ptrNormalizationWarning(value NormalizationWarning) *NormalizationWarning { return &value }
+
+func appendBoundedWarnings(target []NormalizationWarning, values ...NormalizationWarning) []NormalizationWarning {
+	for _, value := range values {
+		if len(target) >= 20 {
+			break
+		}
+		target = append(target, value)
+	}
+	return target
+}
+
+func validateMetricDistances(points []MetricPoint, summary *float64, warnings *[]NormalizationWarning) {
+	var previous float64
+	previousKnown := false
+	for index := range points {
+		value := points[index].DistanceKM
+		if value == nil {
+			continue
+		}
+		invalid := *value < 0
+		if previousKnown && *value+0.01 < previous {
+			invalid = true
+		}
+		if summary != nil {
+			limit := *summary * 1.02
+			if limit < *summary+0.10 {
+				limit = *summary + 0.10
+			}
+			if *value > limit {
+				invalid = true
+			}
+		}
+		if invalid {
+			points[index].DistanceKM = nil
+			*warnings = appendBoundedWarnings(*warnings, NormalizationWarning{Code: "IMPLAUSIBLE_METRIC_DISTANCE", Severity: "warning", Message: "A cumulative distance point was excluded as implausible."})
+			continue
+		}
+		previous = *value
+		previousKnown = true
+	}
 }
 
 func min(a, b int) int { return int(math.Min(float64(a), float64(b))) }

@@ -15,11 +15,19 @@ export const plannedStepSchema = z.object({
   step_id: z.string().uuid(), sequence_no: z.number().int().positive(), step_type: stepType,
   exercise_key: z.string().nullable().optional(), exercise_name: z.string().nullable().optional(), prescription, notes: z.string().nullable().optional(),
 }).strict();
+export const plannedStepGroupSchema = z.object({
+  group_id: z.string().uuid(),
+  label: z.string().max(128).optional(),
+  mode: z.literal('rounds'),
+  rounds: z.number().int().min(1).max(20),
+  step_sequence_nos: z.array(z.number().int().min(1).max(50)).min(2).max(10).refine((values) => new Set(values).size === values.length, 'step_sequence_nos must be unique'),
+  notes: z.string().max(4000).nullable().optional(),
+}).strict();
 export const plannedSessionSchema = z.object({
   session_id: z.string().uuid(), plan_id: z.string().uuid(), athlete_id: z.string().uuid(), date: z.string(), title: z.string(),
   description: z.string().nullable().optional(), sport: z.string(), session_type: z.string(), priority: z.string(), targets: z.record(z.unknown()),
   notes: z.string().nullable().optional(), status: z.enum(['planned', 'completed', 'skipped', 'cancelled']),
-  completed_activity_id: z.string().nullable().optional(), completed_workout_id: z.string().uuid().nullable().optional(), steps: z.array(plannedStepSchema),
+  completed_activity_id: z.string().nullable().optional(), completed_workout_id: z.string().uuid().nullable().optional(), steps: z.array(plannedStepSchema), groups: z.array(plannedStepGroupSchema).optional().default([]),
 }).strict();
 export const planSchema = z.object({
   plan_id: z.string().uuid(), athlete_id: z.string().uuid(), title: z.string(), description: z.string().nullable().optional(), goal: z.record(z.unknown()),
@@ -32,7 +40,9 @@ const workoutEntrySchema = z.object({
   user_label: z.string().nullable().optional(), set_number: z.number().int().nullable().optional(), reps: z.number().nullable().optional(),
   duration_seconds: z.number().nullable().optional(), load_kg: z.number().nullable().optional(), load_description: z.string().nullable().optional(),
   is_bodyweight: z.boolean().optional(), to_failure: z.boolean().optional(), rir: z.number().nullable().optional(), rir_min: z.number().nullable().optional(),
-  rir_max: z.number().nullable().optional(), laterality: z.string().nullable().optional(), muscle_groups: z.array(z.string()).optional(),
+  rir_max: z.number().nullable().optional(), laterality: z.enum(['bilateral', 'unilateral', 'left', 'right', 'alternating', 'unknown']).nullable().optional(), reps_per_side: z.boolean().optional(),
+  load_basis: z.enum(['total_external', 'per_limb', 'bodyweight_added', 'assistance', 'unknown']).nullable().optional(), load_per_limb_kg: z.number().nullable().optional(), total_external_load_kg: z.number().nullable().optional(), added_load_kg: z.number().nullable().optional(),
+  muscle_groups: z.array(z.string()).optional(), direct_muscle_groups: z.array(z.string()).optional(), indirect_muscle_groups: z.array(z.string()).optional(),
   notes: z.string().nullable().optional(), is_warmup: z.boolean().optional(),
 }).strict();
 const comparisonStepSchema = z.object({

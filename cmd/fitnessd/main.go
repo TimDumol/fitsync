@@ -10,13 +10,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	fitnessauth "github.com/timdumol/fitsync/internal/auth"
 	"github.com/timdumol/fitsync/internal/config"
 	"github.com/timdumol/fitsync/internal/db"
+	"github.com/timdumol/fitsync/internal/fitnessrepo"
 	"github.com/timdumol/fitsync/internal/httpapi"
-	"github.com/timdumol/fitsync/internal/importer"
 	"github.com/timdumol/fitsync/internal/ingest"
 	"github.com/timdumol/fitsync/internal/mcpserver"
 )
@@ -37,12 +39,14 @@ func run(args []string) error {
 		return runServe(args[1:])
 	case "migrate":
 		return runMigrate(args[1:])
-	case "import-neon-dump":
-		return runImport(args[1:])
 	case "identities":
 		return runIdentities(args[1:])
 	case "healthcheck":
 		return runHealthcheck()
+	case "mcp-smoke":
+		return runMCPReadSmoke(args[1:])
+	case "exercise-normalization":
+		return runExerciseNormalization(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage())
 	}
@@ -77,6 +81,8 @@ func runServe(args []string) error {
 	defer oidc.Close()
 	api := httpapi.NewAPI(database, httpapi.NewPocketIDAuthorizer(oidc))
 	ingestHandler := ingest.NewHandler(database, cfg)
+	ingestHandler.SetAuthenticator(oidc)
+	api.SetGarminRoutes(ingestHandler)
 	if err := ingestHandler.Reconcile(context.Background()); err != nil {
 		return fmt.Errorf("reconcile archives: %w", err)
 	}
@@ -129,49 +135,6 @@ func runMigrate(args []string) error {
 		return err
 	}
 	return database.Close()
-}
-
-func runImport(args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	flags := flag.NewFlagSet("import-neon-dump", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	databasePath := flags.String("db", cfg.DatabasePath, "SQLite database path")
-	dir := flags.String("dir", "", "Neon dump directory")
-	athlete := flags.String("athlete", "", "destination athlete handle")
-	dryRun := flags.Bool("dry-run", false, "validate and report counts without writing")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 || *dir == "" || *athlete == "" {
-		return errors.New("usage: fitnessd import-neon-dump --db PATH --dir DIR --athlete tim [--dry-run]")
-	}
-	dump, err := importer.Load(*dir)
-	if err != nil {
-		return err
-	}
-	if *dryRun {
-		printImportCounts(dump.Counts)
-		return nil
-	}
-	database, err := db.OpenAndMigrate(context.Background(), *databasePath)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
-	counts, err := importer.Insert(context.Background(), database, dump, *athlete)
-	if err != nil {
-		return err
-	}
-	printImportCounts(counts)
-	return nil
-}
-
-func printImportCounts(counts importer.Counts) {
-	fmt.Printf("garmin_records=%d activities=%d activity_details=%d body_battery_events=%d body_measurements=%d daily_recovery=%d sleep=%d training_snapshot=%d workout_sessions=%d workout_entries=%d\n",
-		counts.GarminRecords, counts.Activities, counts.ActivityDetails, counts.BodyBattery, counts.BodyMeasurements, counts.DailyRecovery, counts.Sleep, counts.TrainingSnapshot, counts.WorkoutSessions, counts.WorkoutEntries)
 }
 
 func runIdentities(args []string) error {
@@ -280,6 +243,64 @@ func runHealthcheck() error {
 	return nil
 }
 
+func runMCPReadSmoke(args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	flags := flag.NewFlagSet("mcp-smoke", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	databasePath := flags.String("db", cfg.DatabasePath, "SQLite database path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: fitnessd mcp-smoke [--db PATH]")
+	}
+	database, err := db.Open(*databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	athletes, err := mcpserver.RunProductionReadSmoke(context.Background(), database, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("MCP read smoke passed for %d production athlete(s); all read-only actions validated; write actions were not invoked.\n", athletes)
+	return nil
+}
+
+func runExerciseNormalization(args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	flags := flag.NewFlagSet("exercise-normalization", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	databasePath := flags.String("db", cfg.DatabasePath, "SQLite database path")
+	apply := flags.Bool("apply", false, "apply exact reviewed aliases")
+	backupPath := flags.String("backup", "", "absolute SQLite backup path required with --apply")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: fitnessd exercise-normalization [--db PATH] [--apply --backup ABSOLUTE_PATH]")
+	}
+	if *apply && strings.TrimSpace(*backupPath) == "" {
+		return errors.New("usage: fitnessd exercise-normalization --apply --backup ABSOLUTE_PATH")
+	}
+	database, err := db.Open(*databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	report, err := fitnessrepo.BackfillExerciseIdentities(context.Background(), database, *apply, *backupPath)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(report)
+}
+
 func usage() string {
-	return "usage: fitnessd {serve|migrate|import-neon-dump|identities {list-pending|list|bind|approve|disable}|healthcheck}"
+	return "usage: fitnessd {serve|migrate|identities {list-pending|list|bind|approve|disable}|healthcheck|mcp-smoke|exercise-normalization}"
 }

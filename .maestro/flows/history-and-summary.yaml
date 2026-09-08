@@ -1,0 +1,46 @@
+appId: com.fitsync.mobile
+name: Browse workout history and summary
+tags:
+  - smoke
+---
+- launchApp
+- tapOn: History
+- assertVisible:
+    id: history-screen
+- assertVisible: ".*intentionally long training session name.*"
+- assertVisible:
+    id: history-delete-workout-00000000-0000-4000-8000-000000000005
+- tapOn:
+    id: history-delete-workout-00000000-0000-4000-8000-000000000005
+- assertVisible: "Delete workout?"
+- tapOn: Delete
+- assertVisible:
+    id: history-screen
+- assertNotVisible: ".*intentionally long training session name.*"
+- assertVisible: ".*Fixture completed workout.*"
+- tapOn:
+    id: history-workout-row-00000000-0000-4000-8000-000000000015
+- assertVisible:
+    id: workout-summary-screen
+- assertVisible: ".*Fixture completed workout.*"
+- assertVisible: ".*completed.*"
+- scroll
+- scrollUntilVisible:
+    element:
+      id: workout-summary-entry-1
+    direction: DOWN
+- assertVisible:
+    id: workout-summary-entry-1
+- assertVisible: ".*10 reps.*"
+- assertVisible: ".*16 kg.*"
+- scrollUntilVisible:
+    element:
+      id: delete-workout-button
+    direction: UP
+- tapOn:
+    id: delete-workout-button
+- assertVisible: "Delete workout?"
+- tapOn: Delete
+- assertVisible:
+    id: history-screen
+- assertNotVisible: ".*Fixture completed workout.*"

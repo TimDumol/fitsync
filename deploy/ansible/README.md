@@ -34,18 +34,8 @@ secret-handling task `no_log`. Secret values are never copied back to the
 controller or included in Compose.
 
 The deliberate deployment allowlist is `Dockerfile`, `go.mod`, `go.sum`,
-`cmd/`, `internal/`, and `migrations/`. The playbook creates an empty,
-root-owned `/opt/fitsync/neon_dump` (group-readable by Fitnessd) mounted
-read-only into Fitnessd; it does
-not upload the local Neon snapshot or Garmin data.
-
-After deployment, an operator may transfer the reviewed Neon snapshot with the
-two commands printed by the playbook (from the repository controller):
-
-```bash
-rsync -a data/neon_dump/ timdumol@aries.timdumol.com:/tmp/fitsync-neon-dump/
-ssh aries.timdumol.com 'sudo install -d -m 0750 -o root -g 65532 /opt/fitsync/neon_dump && sudo cp -a /tmp/fitsync-neon-dump/. /opt/fitsync/neon_dump/ && sudo chown -R root:65532 /opt/fitsync/neon_dump && sudo find /opt/fitsync/neon_dump -type d -exec chmod 0750 {} + && sudo find /opt/fitsync/neon_dump -type f -exec chmod 0640 {} +'
-```
+`cmd/`, `internal/`, and `migrations/`. The playbook does not upload local
+Garmin data, databases, editor files, caches, or plaintext secrets.
 
 ## Deploy
 
@@ -62,14 +52,19 @@ those flags to Ansible after the same checks.
 The playbook validates the candidate Compose file before starting containers,
 waits for both backend health checks, validates the complete Caddyfile inside
 the existing edge container, reloads it, and checks Mars, Fitnessd, and Pocket
-ID over public HTTPS. Previous Compose and site-fragment files remain in the
+ID over public HTTPS. It then runs `fitnessd mcp-smoke` inside the deployed
+Fitnessd container. That check enumerates every registered MCP action, verifies
+that every action exposes input and output schemas, and executes every
+read-only action against the production SQLite data through the same typed
+handlers and MCP output validation used by the server. Write actions are
+covered by the local regression suite and are never invoked by the release
+smoke. Previous Compose and site-fragment files remain in the
 root-owned rollback directory. Any failed validation restores them and reloads
 the last valid Caddy configuration; an initial failed deployment removes its
 new fragment so `mars.timdumol.com` remains served.
 
-The playbook prints the non-secret operator commands for Step 11 after a
-successful deployment. Pocket ID setup, passkey enrollment, subject sync, and
-the Neon import intentionally remain interactive and unattended-playbook
-safe. Run `./scripts/sync-pocket-id-identities.sh` from the repository
+The playbook prints the non-secret operator commands for Pocket ID setup after
+a successful deployment. Pocket ID setup, passkey enrollment, and subject
+sync intentionally remain interactive and unattended-playbook safe. Run `./scripts/sync-pocket-id-identities.sh` from the repository
 controller after creating `.pocket-id-api-key`; the script calls Pocket ID
 directly and only sends the resulting bind commands to Fitnessd over SSH.

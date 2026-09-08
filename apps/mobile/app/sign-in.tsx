@@ -1,26 +1,34 @@
-import { ActivityIndicator, Button, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Redirect } from 'expo-router';
 import { useAuth } from '../src/auth/AuthProvider';
+import { AppButton } from '../src/components/AppButton';
+import { AppIcon } from '../src/components/AppIcon';
+import { colors, radii, spacing } from '../src/ui/theme';
 
 export default function SignIn(): JSX.Element {
   const { ready, signedIn, signIn, authError, clearAuthError } = useAuth();
   if (ready && signedIn) return <Redirect href="/(tabs)/today" />;
-  return <View style={styles.container}>
-    <Text style={styles.title}>FitSync</Text>
+  return <View testID="sign-in-screen" style={styles.container}>
+    <View style={styles.brandMark}><AppIcon name="dumbbell" size={38} color={colors.white} /></View>
+    <Text testID="sign-in-title" style={styles.title}>FitSync</Text>
+    <Text style={styles.kicker}>Training, in sync</Text>
     <Text style={styles.subtitle}>Log the work. Keep the plan in view.</Text>
     {authError ? <View accessible accessibilityRole="alert" style={styles.error}>
-      <Text style={styles.errorTitle}>Sign-in error</Text>
+      <View style={styles.errorHeader}><AppIcon name="alert-circle-outline" size={20} color={colors.danger} /><Text style={styles.errorTitle}>Sign-in error</Text></View>
       <Text selectable style={styles.errorText}>{authError}</Text>
-      <Button title="Dismiss" color="#B42318" onPress={clearAuthError} />
+      <AppButton label="Dismiss" variant="danger" onPress={clearAuthError} />
     </View> : null}
-    {!ready ? <ActivityIndicator /> : <Button title={authError ? 'Try sign-in again' : 'Sign in with Pocket ID'} onPress={() => void signIn()} />}
+    {!ready ? <ActivityIndicator color={colors.primary} /> : <AppButton testID="sign-in-button" label={authError ? 'Try sign-in again' : 'Sign in with Pocket ID'} icon="login" onPress={() => void signIn()} />}
   </View>;
 }
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 },
-  title: { fontSize: 36, fontWeight: '700' },
-  subtitle: { color: '#667085', marginBottom: 16 },
-  error: { width: '100%', gap: 8, padding: 16, borderWidth: 2, borderColor: '#F04438', borderRadius: 12, backgroundColor: '#FEF3F2' },
-  errorTitle: { color: '#B42318', fontSize: 18, fontWeight: '700' },
-  errorText: { color: '#7A271A', lineHeight: 21 },
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.sm, padding: spacing.xl, backgroundColor: colors.background },
+  brandMark: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md, borderRadius: 26, backgroundColor: colors.primary, transform: [{ rotate: '-8deg' }] },
+  title: { color: colors.ink, fontSize: 40, fontWeight: '800', letterSpacing: -1 },
+  kicker: { color: colors.primary, fontSize: 13, fontWeight: '800', letterSpacing: 1.3, textTransform: 'uppercase' },
+  subtitle: { color: colors.muted, marginTop: spacing.sm, marginBottom: spacing.xl, fontSize: 15 },
+  error: { width: '100%', gap: spacing.md, padding: spacing.lg, marginBottom: spacing.sm, borderWidth: 1, borderColor: '#F5B8B3', borderRadius: radii.md, backgroundColor: colors.dangerSoft },
+  errorHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  errorTitle: { color: colors.danger, fontSize: 16, fontWeight: '800' },
+  errorText: { color: '#8E2D27', lineHeight: 21 },
 });

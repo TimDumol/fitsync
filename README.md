@@ -56,8 +56,7 @@ Use `./scripts/deploy.sh --check --diff` for a check-mode preview. The entrypoin
 refuses to invoke Ansible unless `./scripts/test.sh` and `./scripts/build.sh`
 both pass. It uploads only the files needed for the Fitnessd image; it never
 uploads Git metadata, local databases, Garmin data, editor files, caches, or
-plaintext secrets. The Neon import directory is created empty and read-only;
-place an operator-reviewed snapshot there separately before Step 11.
+plaintext secrets.
 
 The deployment starts Pocket ID and waits for public OIDC discovery before
 starting Fitnessd, because Fitnessd fetches that discovery document during
@@ -97,6 +96,28 @@ Registration:     leave blank; use the manually created client ID and secret
 Scopes:           openid email offline_access fitness:read fitness:write
 PKCE:             enabled
 ```
+
+### Exercise identity in MCP writes
+
+MCP clients may always write a free-form `exercise_name`, but must never invent
+an `exercise_key`. Use the read-only `resolve_exercises` action to resolve a
+batch before writing; exact reviewed aliases receive a canonical key and
+non-exact candidates are suggestions only:
+
+```json
+{
+  "exercises": [
+    {"ref": "day1-a", "name": "Bulgarian split squat"},
+    {"ref": "day1-b", "name": "Pull-up or chin-up"}
+  ],
+  "max_candidates": 3
+}
+```
+
+Plan and workout writes preserve the supplied `exercise_name`. Exact aliases
+are normalized automatically, deprecated keys are rewritten, and unknown
+names remain valid with a null key. Bulk writes return a compact normalization
+report with counts and only exceptional or suggested items.
 
 The OAuth client's redirect URI must exactly match the callback URL shown by
 ChatGPT. Run `./scripts/sync-pocket-id-identities.sh` before connecting
@@ -145,6 +166,24 @@ Release builds default to the production API and Pocket ID endpoints. Override
 environment for another deployment. The OAuth resource defaults to
 `<EXPO_PUBLIC_API_BASE_URL>/mcp`.
 
+To install the APK on a connected Android device or emulator and launch the
+app, run:
+
+```bash
+./scripts/install-mobile.sh
+```
+
+The script builds the APK automatically when it is missing. Set
+`FITSYNC_MOBILE_BUILD=1` to force a rebuild. With more than one ADB target
+connected, select one with `FITSYNC_ANDROID_DEVICE=serial` (or use the
+standard `ANDROID_SERIAL` variable). Set `FITSYNC_MOBILE_APK` to install a
+different APK. Pass `--phone` to ignore connected emulators and automatically
+select the physical device. Physical-device installs use ADB's non-streaming
+mode, which is more reliable over WSL2 USB connections. Mobile installs use
+the real API and authentication by default, including phone installs. Pass
+`--fixtures` to build and install the fixture-backed app explicitly; fixture
+and normal APKs are cached separately so one cannot be mistaken for the other.
+
 On this system, the script defaults to these toolchain locations when the
 variables are unset:
 
@@ -159,6 +198,61 @@ Override them for another machine, for example:
 JAVA_HOME=/path/to/jdk ANDROID_HOME=/path/to/android-sdk \
   ./scripts/build-mobile.sh
 ```
+
+### Mobile Maestro E2E tests
+
+The mobile app has a deterministic Maestro suite under `.maestro/`. It builds
+an isolated Android APK with fixture data, so it does not need Pocket ID
+credentials or production health data. The fixture mode is enabled only by
+the E2E script; normal mobile builds use the configured API and OAuth flow.
+
+Install the [Maestro CLI](https://docs.maestro.dev/getting-started), make sure
+the Android SDK has an AVD, then run:
+
+```bash
+./scripts/test-mobile-e2e.sh
+```
+
+The script prefers an existing emulator and otherwise starts the
+`fitsync_api35` AVD headlessly. Override the AVD with
+`FITSYNC_ANDROID_AVD=your_avd_name`; set `FITSYNC_E2E_KEEP_EMULATOR=0` to stop
+an emulator started by the script when the run finishes. A physical device is
+only used when explicitly selected with `FITSYNC_E2E_DEVICE=serial`.
+
+On Linux, hardware acceleration requires the current user to have KVM access;
+the script requires it and fails fast if it is unavailable. Add your user to
+the `kvm` group and start a new login session before running the suite.
+
+The script keeps the full build and Maestro output in a timestamped log under
+`/tmp` and prints only a concise result by default. If a run fails, it prints
+the tail of that log and the Maestro artifact directory; inspect the complete
+log without rerunning, or stream output live with:
+
+```bash
+FITSYNC_E2E_VERBOSE=1 ./scripts/test-mobile-e2e.sh
+```
+
+The suite covers authentication gating and logout, tab navigation, plan and
+planned-session review, skipping a session, workout editing/rest/finish, and
+history/summary browsing. Run one flow while iterating with, for example:
+
+```bash
+maestro test .maestro/flows/workout-lifecycle.yaml
+```
+
+For a faster phone-free check of the same fixture-backed core behavior, run:
+
+```bash
+./scripts/test-mobile-smoke.sh
+# or, from apps/mobile:
+npm run test:smoke
+```
+
+This validates authentication data, plan review/skipping, workout editing and
+completion, and history/summary data. It does not replace Maestro UI coverage;
+it is intended for quick local iteration when no Android target is available.
+The script reuses an existing `node_modules` directory; set
+`FITSYNC_MOBILE_INSTALL=1` when the locked dependencies need reinstalling.
 
 ## First run
 
@@ -250,50 +344,6 @@ file per activity under `activity_details`. Sleep rows retain main sleep,
 nap duration, and `total_sleep_including_naps_hours` as separate fields so
 missing main-sleep records are not mistaken for unusually short nights.
 
-## Upload curated exports to Neon
-
-The sync can use a Neon API key to discover a project and request a temporary
-PostgreSQL connection URI. Use a **project-scoped** API key where possible.
-The key and returned database password are never written to the repository.
-
-Install the locked project dependencies:
-
-```powershell
-uv sync
-```
-
-Enter the API key without echoing it or placing it in PowerShell history:
-
-```powershell
-$secureKey = Read-Host "Neon project API key" -AsSecureString
-$env:NEON_API_KEY = [System.Net.NetworkCredential]::new("", $secureKey).Password
-```
-
-If the API key can access exactly one project, project discovery is automatic.
-For a project-scoped API key, set its project ID; the sync then bypasses
-account-wide project discovery. Database and owner-role discovery use the
-project's primary branch and prefer the default `neondb` database.
-
-```powershell
-$env:NEON_PROJECT_ID = "your-project-id"
-.\.venv\Scripts\python.exe .\garmin_sync.py --neon-only
-```
-
-For the normal combined refresh:
-
-```powershell
-.\.venv\Scripts\python.exe .\garmin_sync.py --days 3 --extended --neon
-```
-
-Optional overrides are `NEON_PROJECT_NAME`, `NEON_DATABASE_NAME`, and
-`NEON_ROLE_NAME`. `NEON_DATABASE_URL` may be used instead of the management API
-key when a scoped PostgreSQL connection string is preferred.
-
-Only the curated files under `data\garmin` are uploaded. Garmin login tokens,
-raw activity files, and `.private` contents are excluded. Neon stores the
-records in private `fitness.records` JSONB storage and creates analysis views
-under `fitness_agent`, plus a no-login `fitness_agent_reader` group role.
-
 ## Upload raw Garmin data to Fitnessd
 
 Fitnessd is the new canonical SQLite-backed service at
@@ -342,33 +392,3 @@ rests, or notes, and a session can link to its matching Garmin activity without
 double-counting the manual placeholder in `fitness_agent.activities`. Read-only
 analysis is available through `fitness_agent.workout_sessions` and
 `fitness_agent.workout_entries`.
-
-### Windows one-time setup and scheduling
-
-The helper scripts use Windows DPAPI to protect the API key for the current
-Windows user on this computer:
-
-```powershell
-Set-Location E:\codex\fitness
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\configure_neon.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run_fitness_sync.ps1 -Days 3
-```
-
-To retry only the upload of already-downloaded Garmin data, without fetching
-Garmin again:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run_fitness_sync.ps1 -NeonOnly
-```
-
-After the manual sync succeeds, register a daily task (change the time if
-desired):
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_fitness_sync_task.ps1 -At "06:30" -Days 3
-```
-
-The task runs as the current Windows user, starts later if the computer was
-asleep, and appends output to `.private\logs\fitness-sync.log`. Garmin may
-occasionally require an interactive login/MFA refresh; run the sync manually
-when the log reports an authentication failure.

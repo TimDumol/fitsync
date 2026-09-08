@@ -57,7 +57,6 @@ services:
     volumes:
       - ./data/fitnessd:/data
       - ./data/archives:/var/lib/fitnessd/archives
-      - ./data/neon_dump:/import/neon_dump:ro
     environment:
       DB_PATH: /data/fitness.db
       ARCHIVE_DIR: /var/lib/fitnessd/archives

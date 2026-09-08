@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	fitnessauth "github.com/timdumol/fitsync/internal/auth"
 	"github.com/timdumol/fitsync/internal/config"
 )
 
@@ -34,11 +35,16 @@ type Handler struct {
 	DB          *sql.DB
 	ArchiveRoot string
 	TokenHashes map[string][sha256.Size]byte
+	OIDC        *fitnessauth.Authenticator
 }
 
 func NewHandler(database *sql.DB, cfg config.Config) *Handler {
 	return &Handler{DB: database, ArchiveRoot: cfg.ArchiveRoot, TokenHashes: cfg.IngestTokenHashes}
 }
+
+// SetAuthenticator installs the OIDC boundary for the mobile routes. The
+// legacy handler remains independently protected by its static token hashes.
+func (h *Handler) SetAuthenticator(authenticator *fitnessauth.Authenticator) { h.OIDC = authenticator }
 
 type batch struct {
 	Records  []recordMetadata  `json:"records"`
@@ -86,6 +92,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid ingest credentials")
 		return
 	}
+	h.serveAuthorized(w, r, athleteHandle, athleteID)
+}
+
+// serveAuthorized is the one parsing and commit path shared by legacy and
+// OIDC-authenticated ingestion. The caller has already resolved the athlete.
+func (h *Handler) serveAuthorized(w http.ResponseWriter, r *http.Request, athleteHandle, athleteID string) {
 	if r.ContentLength > maxRequestSize {
 		writeError(w, http.StatusRequestEntityTooLarge, "request is too large")
 		return

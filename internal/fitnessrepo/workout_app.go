@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,12 +82,23 @@ func validDate(value string) error {
 }
 
 func (r *Repository) UpsertPlanDraft(ctx context.Context, athleteID string, in PlanWrite) (PlanResult, error) {
+	// Expand the legacy step map into a private copy before resolving exercise
+	// identities. A failed resolution must leave the caller's request untouched
+	// and abort before any transaction can publish a partial plan.
+	in.Sessions = append([]PlannedSessionWrite(nil), in.Sessions...)
 	if in.Steps != nil {
 		for i := range in.Sessions {
 			if len(in.Sessions[i].Steps) == 0 && in.Steps[in.Sessions[i].ID] != nil {
-				in.Sessions[i].Steps = in.Steps[in.Sessions[i].ID]
+				in.Sessions[i].Steps = append([]PlannedStep(nil), in.Steps[in.Sessions[i].ID]...)
 			}
 		}
+	}
+	for i := range in.Sessions {
+		normalized, err := normalizePlannedSteps(in.Sessions[i].Steps)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		in.Sessions[i].Steps = normalized
 	}
 	if err := validatePlanWrite(athleteID, in); err != nil {
 		return PlanResult{}, err
@@ -130,13 +142,13 @@ func (r *Repository) UpsertPlanDraft(ctx context.Context, athleteID string, in P
 	goal := rawOrEmptyObject(in.Plan.Goal)
 	if created {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO training_plans
-			(id,athlete_id,title,description,goal_raw,status,start_date,end_date,source,source_ref,active,client_updated_at,server_synced_at,created_at,sync_seq)
-			VALUES(?,?,?,?,?,'draft',?,?,?, ?,0,?,?,?,0)`,
-			in.Plan.ID, athleteID, in.Plan.Title, nullableText(in.Plan.Description), string(goal), nullableText(in.Plan.StartDate), nullableText(in.Plan.EndDate), "mcp", nullableText(in.Plan.SourceRef), now, now, now); err != nil {
+			(id,athlete_id,title,description,goal_raw,status,start_date,end_date,source,source_ref,active,client_updated_at,server_synced_at,created_at,sync_seq,idempotency_key)
+			VALUES(?,?,?,?,?,'draft',?,?,?, ?,0,?,?,?,0,?)`,
+			in.Plan.ID, athleteID, in.Plan.Title, nullableText(in.Plan.Description), string(goal), nullableText(in.Plan.StartDate), nullableText(in.Plan.EndDate), "mcp", nullableText(in.Plan.SourceRef), now, now, now, nullableStringValue(optionalString(in.Plan.IdempotencyKey))); err != nil {
 			return fail(normalizeWriteError(err))
 		}
-	} else if _, err := tx.ExecContext(ctx, `UPDATE training_plans SET title=?,description=?,goal_raw=?,status='draft',start_date=?,end_date=?,source=?,source_ref=?,active=0,client_updated_at=?,server_synced_at=?,deleted_at=NULL WHERE id=?`,
-		in.Plan.Title, nullableText(in.Plan.Description), string(goal), nullableText(in.Plan.StartDate), nullableText(in.Plan.EndDate), "mcp", nullableText(in.Plan.SourceRef), now, now, in.Plan.ID); err != nil {
+	} else if _, err := tx.ExecContext(ctx, `UPDATE training_plans SET title=?,description=?,goal_raw=?,status='draft',start_date=?,end_date=?,source=?,source_ref=?,active=0,client_updated_at=?,server_synced_at=?,deleted_at=NULL,idempotency_key=? WHERE id=?`,
+		in.Plan.Title, nullableText(in.Plan.Description), string(goal), nullableText(in.Plan.StartDate), nullableText(in.Plan.EndDate), "mcp", nullableText(in.Plan.SourceRef), now, now, nullableStringValue(optionalString(in.Plan.IdempotencyKey)), in.Plan.ID); err != nil {
 		return fail(normalizeWriteError(err))
 	}
 
@@ -155,6 +167,9 @@ func (r *Repository) UpsertPlanDraft(ctx context.Context, athleteID string, in P
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE planned_session_steps SET deleted_at=? WHERE planned_session_id IN (SELECT id FROM planned_sessions WHERE plan_id=? AND athlete_id=?) AND deleted_at IS NULL", now, in.Plan.ID, athleteID); err != nil {
 		return fail(errors.New("internal_error: plan step tombstones"))
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE planned_step_groups SET deleted_at=? WHERE planned_session_id IN (SELECT id FROM planned_sessions WHERE plan_id=? AND athlete_id=?) AND deleted_at IS NULL", now, in.Plan.ID, athleteID); err != nil {
+		return fail(errors.New("internal_error: plan group tombstones"))
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE planned_sessions SET deleted_at=? WHERE plan_id=? AND athlete_id=? AND deleted_at IS NULL", now, in.Plan.ID, athleteID); err != nil {
 		return fail(errors.New("internal_error: plan session tombstones"))
@@ -175,13 +190,13 @@ func (r *Repository) UpsertPlanDraft(ctx context.Context, athleteID string, in P
 			title = "Workout"
 		}
 		if existing {
-			_, err = tx.ExecContext(ctx, `UPDATE planned_sessions SET plan_id=?,athlete_id=?,session_date=?,title=?,description=?,sport=?,session_type=?,priority=?,targets_raw=?,notes=?,status='planned',client_updated_at=?,server_synced_at=?,deleted_at=NULL WHERE id=?`,
-				in.Plan.ID, athleteID, session.Date, title, nullableText(optionalString(session.Description)), session.Sport, session.SessionType, session.Priority, mustJSON(session.Targets), nullableText(session.Notes), now, now, session.ID)
+			_, err = tx.ExecContext(ctx, `UPDATE planned_sessions SET plan_id=?,athlete_id=?,session_date=?,title=?,description=?,sport=?,session_type=?,priority=?,targets_raw=?,notes=?,status='planned',client_updated_at=?,server_synced_at=?,deleted_at=NULL,idempotency_key=? WHERE id=?`,
+				in.Plan.ID, athleteID, session.Date, title, nullableText(optionalString(session.Description)), session.Sport, session.SessionType, session.Priority, mustJSON(session.Targets), nullableText(session.Notes), now, now, nullableStringValue(optionalString(session.IdempotencyKey)), session.ID)
 		} else {
 			_, err = tx.ExecContext(ctx, `INSERT INTO planned_sessions
-				(id,plan_id,athlete_id,session_date,title,description,sport,session_type,priority,targets_raw,notes,status,client_updated_at,server_synced_at,created_at)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,'planned',?,?,?)`,
-				session.ID, in.Plan.ID, athleteID, session.Date, title, nullableText(optionalString(session.Description)), session.Sport, session.SessionType, session.Priority, mustJSON(session.Targets), nullableText(session.Notes), now, now, now)
+				(id,plan_id,athlete_id,session_date,title,description,sport,session_type,priority,targets_raw,notes,status,client_updated_at,server_synced_at,created_at,idempotency_key)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,'planned',?,?,?,?)`,
+				session.ID, in.Plan.ID, athleteID, session.Date, title, nullableText(optionalString(session.Description)), session.Sport, session.SessionType, session.Priority, mustJSON(session.Targets), nullableText(session.Notes), now, now, now, nullableStringValue(optionalString(session.IdempotencyKey)))
 		}
 		if err != nil {
 			return fail(normalizeWriteError(err))
@@ -196,13 +211,37 @@ func (r *Repository) UpsertPlanDraft(ctx context.Context, athleteID string, in P
 				return fail(errors.New("internal_error: planned step lookup"))
 			}
 			_, err = tx.ExecContext(ctx, `INSERT INTO planned_session_steps
-				(id,planned_session_id,athlete_id,sequence_no,step_type,exercise_key,exercise_name,prescription_raw,notes,created_at,deleted_at)
-				VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
+				(id,planned_session_id,athlete_id,sequence_no,step_type,exercise_key,exercise_name,prescription_raw,notes,created_at,deleted_at,idempotency_key)
+				VALUES(?,?,?,?,?,?,?,?,?,?,NULL,?)
 				ON CONFLICT(id) DO UPDATE SET planned_session_id=excluded.planned_session_id,athlete_id=excluded.athlete_id,
 				sequence_no=excluded.sequence_no,step_type=excluded.step_type,exercise_key=excluded.exercise_key,
 				exercise_name=excluded.exercise_name,prescription_raw=excluded.prescription_raw,notes=excluded.notes,
-				created_at=excluded.created_at,deleted_at=NULL`,
-				step.ID, session.ID, athleteID, step.SequenceNo, step.StepType, nullableStringValue(step.ExerciseKey), nullableStringValue(step.ExerciseName), rawOrEmptyObject(step.Prescription), nullableStringValue(step.Notes), now)
+				created_at=excluded.created_at,deleted_at=NULL,idempotency_key=excluded.idempotency_key`,
+				step.ID, session.ID, athleteID, step.SequenceNo, step.StepType, nullableStringValue(step.ExerciseKey), nullableStringValue(step.ExerciseName), rawOrEmptyObject(step.Prescription), nullableStringValue(step.Notes), now, nullableStringValue(optionalString(step.IdempotencyKey)))
+			if err != nil {
+				return fail(normalizeWriteError(err))
+			}
+		}
+		for _, group := range session.Groups {
+			var groupOwner, groupSession string
+			groupErr := tx.QueryRowContext(ctx, "SELECT athlete_id,planned_session_id FROM planned_step_groups WHERE id=?", group.ID).Scan(&groupOwner, &groupSession)
+			groupExists := groupErr == nil
+			if groupErr != nil && !errors.Is(groupErr, sql.ErrNoRows) {
+				return fail(errors.New("internal_error: planned step group lookup"))
+			}
+			if groupExists && groupOwner != athleteID {
+				return fail(errors.New("conflict: planned step group belongs to another athlete"))
+			}
+			if groupExists && groupSession != session.ID {
+				return fail(errors.New("conflict: planned step group belongs to another session"))
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO planned_step_groups
+				(id,planned_session_id,athlete_id,label,mode,rounds,step_sequence_nos_raw,notes,created_at,deleted_at,idempotency_key)
+				VALUES(?,?,?,?,?,?,?,?,?,NULL,?)
+				ON CONFLICT(id) DO UPDATE SET planned_session_id=excluded.planned_session_id,athlete_id=excluded.athlete_id,
+				label=excluded.label,mode=excluded.mode,rounds=excluded.rounds,step_sequence_nos_raw=excluded.step_sequence_nos_raw,
+				notes=excluded.notes,created_at=excluded.created_at,deleted_at=NULL,idempotency_key=excluded.idempotency_key`,
+				group.ID, session.ID, athleteID, group.Label, group.Mode, group.Rounds, string(mustJSON(group.StepSequenceNos)), nullableText(group.Notes), now, nullableStringValue(optionalString(group.IdempotencyKey)))
 			if err != nil {
 				return fail(normalizeWriteError(err))
 			}
@@ -397,10 +436,14 @@ func loadPlanAggregate(ctx context.Context, db DBTX, athleteID, planID string, i
 	var plan TrainingPlan
 	var description, startDate, endDate, sourceRef sql.NullString
 	var goalRaw string
-	if err := db.QueryRowContext(ctx, `SELECT id,athlete_id,title,description,goal_raw,status,start_date,end_date,source,source_ref,created_at,sync_seq
+	var idempotencyKey sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT id,athlete_id,title,description,goal_raw,status,start_date,end_date,source,source_ref,created_at,sync_seq,idempotency_key
 		FROM training_plans WHERE id=? AND athlete_id=? AND deleted_at IS NULL`, planID, athleteID).Scan(
-		&plan.ID, &plan.AthleteID, &plan.Title, &description, &goalRaw, &plan.Status, &startDate, &endDate, &plan.Source, &sourceRef, &plan.CreatedAt, &plan.SyncSeq); err != nil {
+		&plan.ID, &plan.AthleteID, &plan.Title, &description, &goalRaw, &plan.Status, &startDate, &endDate, &plan.Source, &sourceRef, &plan.CreatedAt, &plan.SyncSeq, &idempotencyKey); err != nil {
 		return PlanResult{}, err
+	}
+	if idempotencyKey.Valid {
+		plan.IdempotencyKey = idempotencyKey.String
 	}
 	plan.Goal = json.RawMessage(goalRaw)
 	if description.Valid {
@@ -445,11 +488,14 @@ func (r *Repository) loadPlannedSession(ctx context.Context, db DBTX, athleteID,
 
 func loadPlannedSession(ctx context.Context, db DBTX, athleteID, id string, includeSteps bool) (PlannedSession, error) {
 	var session PlannedSession
-	var description, notes, activity, workout, targetsRaw sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT id,plan_id,athlete_id,session_date,title,description,sport,session_type,priority,targets_raw,notes,status,completed_activity_id,completed_workout_id
+	var description, notes, activity, workout, targetsRaw, idempotencyKey sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT id,plan_id,athlete_id,session_date,title,description,sport,session_type,priority,targets_raw,notes,status,completed_activity_id,completed_workout_id,idempotency_key
 		FROM planned_sessions WHERE id=? AND athlete_id=? AND deleted_at IS NULL`, id, athleteID).Scan(
-		&session.ID, &session.PlanID, &session.AthleteID, &session.Date, &session.Title, &description, &session.Sport, &session.SessionType, &session.Priority, &targetsRaw, &notes, &session.Status, &activity, &workout); err != nil {
+		&session.ID, &session.PlanID, &session.AthleteID, &session.Date, &session.Title, &description, &session.Sport, &session.SessionType, &session.Priority, &targetsRaw, &notes, &session.Status, &activity, &workout, &idempotencyKey); err != nil {
 		return PlannedSession{}, err
+	}
+	if idempotencyKey.Valid {
+		session.IdempotencyKey = idempotencyKey.String
 	}
 	if description.Valid {
 		session.Description = &description.String
@@ -479,12 +525,17 @@ func loadPlannedSession(ctx context.Context, db DBTX, athleteID, id string, incl
 			return PlannedSession{}, err
 		}
 		session.Steps = steps
+		groups, err := loadGroups(ctx, db, athleteID, id)
+		if err != nil {
+			return PlannedSession{}, err
+		}
+		session.Groups = groups
 	}
 	return session, nil
 }
 
 func loadSteps(ctx context.Context, db DBTX, athleteID, sessionID string) ([]PlannedStep, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id,planned_session_id,athlete_id,sequence_no,step_type,exercise_key,exercise_name,prescription_raw,notes
+	rows, err := db.QueryContext(ctx, `SELECT id,planned_session_id,athlete_id,sequence_no,step_type,exercise_key,exercise_name,prescription_raw,notes,idempotency_key
 		FROM planned_session_steps WHERE planned_session_id=? AND athlete_id=? AND deleted_at IS NULL ORDER BY sequence_no,id`, sessionID, athleteID)
 	if err != nil {
 		return nil, errors.New("internal_error: planned step query")
@@ -493,9 +544,12 @@ func loadSteps(ctx context.Context, db DBTX, athleteID, sessionID string) ([]Pla
 	result := []PlannedStep{}
 	for rows.Next() {
 		var step PlannedStep
-		var key, name, notes sql.NullString
-		if err := rows.Scan(&step.ID, &step.PlannedSessionID, &step.AthleteID, &step.SequenceNo, &step.StepType, &key, &name, &step.Prescription, &notes); err != nil {
+		var key, name, notes, idempotencyKey sql.NullString
+		if err := rows.Scan(&step.ID, &step.PlannedSessionID, &step.AthleteID, &step.SequenceNo, &step.StepType, &key, &name, &step.Prescription, &notes, &idempotencyKey); err != nil {
 			return nil, errors.New("internal_error: planned step row")
+		}
+		if idempotencyKey.Valid {
+			step.IdempotencyKey = idempotencyKey.String
 		}
 		if key.Valid {
 			step.ExerciseKey = &key.String
@@ -511,6 +565,61 @@ func loadSteps(ctx context.Context, db DBTX, athleteID, sessionID string) ([]Pla
 	return result, rows.Err()
 }
 
+func loadGroups(ctx context.Context, db DBTX, athleteID, sessionID string) ([]PlannedStepGroup, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id,planned_session_id,athlete_id,label,mode,rounds,step_sequence_nos_raw,notes,idempotency_key
+		FROM planned_step_groups WHERE planned_session_id=? AND athlete_id=? AND deleted_at IS NULL ORDER BY id`, sessionID, athleteID)
+	if err != nil {
+		return nil, errors.New("internal_error: planned step group query")
+	}
+	defer rows.Close()
+	result := []PlannedStepGroup{}
+	for rows.Next() {
+		var group PlannedStepGroup
+		var raw string
+		var notes, idempotencyKey sql.NullString
+		if err := rows.Scan(&group.ID, &group.PlannedSessionID, &group.AthleteID, &group.Label, &group.Mode, &group.Rounds, &raw, &notes, &idempotencyKey); err != nil {
+			return nil, errors.New("internal_error: planned step group row")
+		}
+		var members []json.RawMessage
+		if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw)[0] != '[' || json.Unmarshal([]byte(raw), &members) != nil || len(members) < 2 {
+			return nil, errors.New("internal_error: planned step group members")
+		}
+		group.StepSequenceNos = make([]int, 0, len(members))
+		for _, member := range members {
+			var sequenceNo int
+			if bytes.Equal(bytes.TrimSpace(member), []byte("null")) || json.Unmarshal(member, &sequenceNo) != nil {
+				return nil, errors.New("internal_error: planned step group members")
+			}
+			group.StepSequenceNos = append(group.StepSequenceNos, sequenceNo)
+		}
+		if idempotencyKey.Valid {
+			group.IdempotencyKey = idempotencyKey.String
+		}
+		if notes.Valid {
+			group.Notes = &notes.String
+		}
+		result = append(result, group)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.New("internal_error: planned step group rows")
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		leftFirst, rightFirst := 0, 0
+		if len(left.StepSequenceNos) > 0 {
+			leftFirst = left.StepSequenceNos[0]
+		}
+		if len(right.StepSequenceNos) > 0 {
+			rightFirst = right.StepSequenceNos[0]
+		}
+		if leftFirst != rightFirst {
+			return leftFirst < rightFirst
+		}
+		return left.ID < right.ID
+	})
+	return result, nil
+}
+
 func (r *Repository) UpsertWorkoutAggregate(ctx context.Context, athleteID string, in WorkoutWrite) (WorkoutWinner, error) {
 	return r.upsertWorkoutAggregate(ctx, athleteID, in, false)
 }
@@ -521,7 +630,14 @@ func (r *Repository) CompleteWorkout(ctx context.Context, athleteID string, in W
 }
 
 func (r *Repository) upsertWorkoutAggregate(ctx context.Context, athleteID string, in WorkoutWrite, completing bool) (WorkoutWinner, error) {
+	var err error
+	if in, _, err = normalizeWorkoutWrite(in); err != nil {
+		return WorkoutWinner{}, err
+	}
 	if err := validateWorkoutWrite(in); err != nil {
+		return WorkoutWinner{}, err
+	}
+	if err := validateIdempotencyKey(in.IdempotencyKey); err != nil {
 		return WorkoutWinner{}, err
 	}
 	if in.Status == "" {
@@ -614,14 +730,14 @@ func (r *Repository) upsertWorkoutAggregate(ctx context.Context, athleteID strin
 		seq, err = allocateSyncSeq(ctx, tx)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO workout_sessions
-				(id,athlete_id,workout_date,title,source,metadata_raw,client_updated_at,server_synced_at,created_at,planned_session_id,status,started_at_utc_ms,completed_at_utc_ms,sync_seq)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, now, now, nullableStringValue(in.PlannedSessionID), in.Status, millis(started), millis(completed), seq)
+				(id,athlete_id,workout_date,title,source,metadata_raw,client_updated_at,server_synced_at,created_at,planned_session_id,status,started_at_utc_ms,completed_at_utc_ms,sync_seq,idempotency_key)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, now, now, nullableStringValue(in.PlannedSessionID), in.Status, millis(started), millis(completed), seq, nullableStringValue(optionalString(in.IdempotencyKey)))
 		}
 	} else {
 		seq, err = allocateSyncSeq(ctx, tx)
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE workout_sessions SET workout_date=?,title=?,source=?,metadata_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL,planned_session_id=?,status=?,started_at_utc_ms=?,completed_at_utc_ms=?,sync_seq=? WHERE id=?`,
-				in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, now, nullableStringValue(in.PlannedSessionID), in.Status, millis(started), millis(completed), seq, in.ID)
+			_, err = tx.ExecContext(ctx, `UPDATE workout_sessions SET workout_date=?,title=?,source=?,metadata_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL,planned_session_id=?,status=?,started_at_utc_ms=?,completed_at_utc_ms=?,sync_seq=?,idempotency_key=? WHERE id=?`,
+				in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, now, nullableStringValue(in.PlannedSessionID), in.Status, millis(started), millis(completed), seq, nullableStringValue(optionalString(in.IdempotencyKey)), in.ID)
 		}
 	}
 	if err != nil {
@@ -631,6 +747,12 @@ func (r *Repository) upsertWorkoutAggregate(ctx context.Context, athleteID strin
 		return fail(errors.New("internal_error: workout entries"))
 	}
 	for _, entry := range in.Entries {
+		if err := validateStrengthEntry(entry); err != nil {
+			return fail(err)
+		}
+		if err := validateIdempotencyKey(entry.IdempotencyKey); err != nil {
+			return fail(err)
+		}
 		var entryOwner string
 		err := tx.QueryRowContext(ctx, "SELECT athlete_id FROM workout_entries WHERE id=?", entry.EntryID).Scan(&entryOwner)
 		if err == nil && entryOwner != athleteID {
@@ -639,14 +761,14 @@ func (r *Repository) upsertWorkoutAggregate(ctx context.Context, athleteID strin
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fail(errors.New("internal_error: workout entry lookup"))
 		}
-		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, MuscleGroups: entry.MuscleGroups, Notes: entry.Notes, IsWarmup: entry.IsWarmup}
+		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, RepsPerSide: entry.RepsPerSide, LoadBasis: entry.LoadBasis, LoadPerLimbKG: entry.LoadPerLimbKG, TotalExternalLoadKG: entry.TotalExternalLoadKG, AddedLoadKG: entry.AddedLoadKG, MuscleGroups: entry.MuscleGroups, DirectMuscleGroups: entry.DirectMuscleGroups, IndirectMuscleGroups: entry.IndirectMuscleGroups, Notes: entry.Notes, IsWarmup: entry.IsWarmup}
 		entryRaw, _ := json.Marshal(payload)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_entries
-			(id,session_id,athlete_id,sequence_no,entry_type,payload_raw,client_updated_at,server_synced_at,deleted_at,planned_step_id)
-			VALUES(?,?,?,?,?,?,?,?,NULL,?) ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id,athlete_id=excluded.athlete_id,
+			(id,session_id,athlete_id,sequence_no,entry_type,payload_raw,client_updated_at,server_synced_at,deleted_at,planned_step_id,idempotency_key)
+			VALUES(?,?,?,?,?,?,?,?,NULL,?,?) ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id,athlete_id=excluded.athlete_id,
 			sequence_no=excluded.sequence_no,entry_type=excluded.entry_type,payload_raw=excluded.payload_raw,client_updated_at=excluded.client_updated_at,
-			server_synced_at=excluded.server_synced_at,deleted_at=NULL,planned_step_id=excluded.planned_step_id`,
-			entry.EntryID, in.ID, athleteID, entry.SequenceNo, entry.EntryType, string(entryRaw), in.ClientUpdatedAt, now, nullableStringValue(entry.PlannedStepID)); err != nil {
+			server_synced_at=excluded.server_synced_at,deleted_at=NULL,planned_step_id=excluded.planned_step_id,idempotency_key=excluded.idempotency_key`,
+			entry.EntryID, in.ID, athleteID, entry.SequenceNo, entry.EntryType, string(entryRaw), in.ClientUpdatedAt, now, nullableStringValue(entry.PlannedStepID), nullableStringValue(optionalString(entry.IdempotencyKey))); err != nil {
 			return fail(normalizeWriteError(err))
 		}
 	}
@@ -681,6 +803,59 @@ func (r *Repository) Workout(ctx context.Context, athleteID, workoutID string) (
 		return StrengthWorkout{}, errors.New("not_found: workout")
 	}
 	return value, err
+}
+
+// DeleteWorkoutAggregate soft-deletes a v2 workout and its entries while
+// publishing a tombstone through the aggregate sync cursor. Repeating the
+// request is intentionally idempotent so an offline retry is safe.
+func (r *Repository) DeleteWorkoutAggregate(ctx context.Context, athleteID, workoutID string) error {
+	if err := requireUUID(workoutID); err != nil {
+		return err
+	}
+	tx, err := r.begin(ctx)
+	if err != nil {
+		return err
+	}
+	fail := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	var owner string
+	var deleted sql.NullInt64
+	err = tx.QueryRowContext(ctx, "SELECT athlete_id,deleted_at FROM workout_sessions WHERE id=?", workoutID).Scan(&owner, &deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fail(errors.New("not_found: workout"))
+	}
+	if err != nil {
+		return fail(errors.New("internal_error: workout lookup"))
+	}
+	if owner != athleteID {
+		return fail(errors.New("not_found: workout"))
+	}
+	if deleted.Valid {
+		if err := tx.Commit(); err != nil {
+			return errors.New("internal_error: transaction commit")
+		}
+		return nil
+	}
+	now := r.now()
+	if _, err := tx.ExecContext(ctx, "UPDATE workout_sessions SET deleted_at=?,client_updated_at=?,server_synced_at=? WHERE id=? AND athlete_id=?", now, now, now, workoutID, athleteID); err != nil {
+		return fail(errors.New("internal_error: workout delete"))
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE workout_entries SET deleted_at=?,server_synced_at=? WHERE session_id=? AND athlete_id=? AND deleted_at IS NULL", now, now, workoutID, athleteID); err != nil {
+		return fail(errors.New("internal_error: entry delete"))
+	}
+	seq, err := allocateSyncSeq(ctx, tx)
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE workout_sessions SET sync_seq=? WHERE id=? AND athlete_id=?", seq, workoutID, athleteID); err != nil {
+		return fail(errors.New("internal_error: workout sequence"))
+	}
+	if err := tx.Commit(); err != nil {
+		return errors.New("internal_error: transaction commit")
+	}
+	return nil
 }
 
 func loadWorkoutAggregate(ctx context.Context, db DBTX, athleteID, workoutID string) (StrengthWorkout, error) {
@@ -746,7 +921,11 @@ func loadEntries(ctx context.Context, db DBTX, athleteID, workoutID string) ([]S
 			continue
 		}
 		groups := p.MuscleGroups
-		value := StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, MuscleGroups: groups, Notes: p.Notes, IsWarmup: p.IsWarmup}
+		value := StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, RepsPerSide: p.RepsPerSide, LoadBasis: p.LoadBasis, LoadPerLimbKG: p.LoadPerLimbKG, TotalExternalLoadKG: p.TotalExternalLoadKG, AddedLoadKG: p.AddedLoadKG, MuscleGroups: groups, DirectMuscleGroups: p.DirectMuscleGroups, IndirectMuscleGroups: p.IndirectMuscleGroups, Notes: p.Notes, IsWarmup: p.IsWarmup}
+		if len(value.DirectMuscleGroups) == 0 && len(value.IndirectMuscleGroups) == 0 && len(p.MuscleGroups) > 0 {
+			value.DirectMuscleGroups = append([]string(nil), p.MuscleGroups...)
+		}
+		applyNormalizedEntry(&value)
 		if planned.Valid {
 			value.PlannedStepID = &planned.String
 		}
@@ -841,6 +1020,9 @@ func validatePlanWrite(athleteID string, in PlanWrite) error {
 	if err := requireUUIDv7(in.Plan.ID); err != nil {
 		return err
 	}
+	if err := validateIdempotencyKey(in.Plan.IdempotencyKey); err != nil {
+		return err
+	}
 	if in.Plan.Title == "" || len(in.Plan.Title) > 512 {
 		return errors.New("invalid_input: plan title")
 	}
@@ -867,8 +1049,13 @@ func validatePlanWrite(athleteID string, in PlanWrite) error {
 		return errors.New("invalid_input: plan end_date must not be before start_date")
 	}
 	seenSessions := map[string]bool{}
+	seenGroupIDs := map[string]bool{}
+	seenGroupKeys := map[string]bool{}
 	for _, session := range in.Sessions {
 		if err := requireUUIDv7(session.ID); err != nil {
+			return err
+		}
+		if err := validateIdempotencyKey(session.IdempotencyKey); err != nil {
 			return err
 		}
 		if seenSessions[session.ID] {
@@ -893,13 +1080,118 @@ func validatePlanWrite(athleteID string, in PlanWrite) error {
 			if err := validateStep(step); err != nil {
 				return err
 			}
+			if err := validateIdempotencyKey(step.IdempotencyKey); err != nil {
+				return err
+			}
 			if seenSteps[step.SequenceNo] || seenStepIDs[step.ID] {
 				return errors.New("invalid_input: duplicate step sequence or ID")
 			}
 			seenSteps[step.SequenceNo], seenStepIDs[step.ID] = true, true
 		}
+		if err := validatePlannedStepGroups(session, seenGroupIDs, seenGroupKeys); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validatePlannedStepGroups(session PlannedSessionWrite, seenGroupIDs, seenGroupKeys map[string]bool) error {
+	if len(session.Groups) > 0 && len(session.Steps) == 0 {
+		return errors.New("invalid_input: group references an unknown step sequence")
+	}
+	stepsBySequence := make(map[int]PlannedStep, len(session.Steps))
+	stepIndexes := make(map[int]int, len(session.Steps))
+	orderedSteps := append([]PlannedStep(nil), session.Steps...)
+	sort.SliceStable(orderedSteps, func(i, j int) bool { return orderedSteps[i].SequenceNo < orderedSteps[j].SequenceNo })
+	for index, step := range orderedSteps {
+		stepsBySequence[step.SequenceNo] = step
+		stepIndexes[step.SequenceNo] = index
+	}
+	groupedSteps := make(map[int]bool)
+	for _, group := range session.Groups {
+		if err := requireUUIDv7(group.ID); err != nil {
+			return err
+		}
+		if seenGroupIDs[group.ID] {
+			return errors.New("invalid_input: duplicate group ID")
+		}
+		seenGroupIDs[group.ID] = true
+		if err := validateIdempotencyKey(group.IdempotencyKey); err != nil {
+			return err
+		}
+		if group.IdempotencyKey != "" {
+			if seenGroupKeys[group.IdempotencyKey] {
+				return errors.New("invalid_input: duplicate group idempotency_key")
+			}
+			seenGroupKeys[group.IdempotencyKey] = true
+		}
+		if len(group.Label) > 128 || len(group.NotesValue()) > 4000 {
+			return errors.New("invalid_input: group text is too long")
+		}
+		if group.Mode != "rounds" {
+			return errors.New("invalid_input: group mode must be rounds")
+		}
+		if group.Rounds < 1 || group.Rounds > 20 {
+			return errors.New("invalid_input: group rounds must be between 1 and 20")
+		}
+		if len(group.StepSequenceNos) < 2 || len(group.StepSequenceNos) > 10 {
+			return errors.New("invalid_input: group must reference 2-10 steps")
+		}
+		seenMembers := make(map[int]bool, len(group.StepSequenceNos))
+		minIndex, maxIndex := len(session.Steps), -1
+		for _, sequenceNo := range group.StepSequenceNos {
+			if sequenceNo < 1 || sequenceNo > 50 {
+				return errors.New("invalid_input: group step sequence is out of bounds")
+			}
+			if seenMembers[sequenceNo] {
+				return errors.New("invalid_input: group step sequences must be unique")
+			}
+			seenMembers[sequenceNo] = true
+			step, ok := stepsBySequence[sequenceNo]
+			if !ok {
+				return errors.New("invalid_input: group references an unknown step sequence")
+			}
+			if groupedSteps[sequenceNo] {
+				return errors.New("invalid_input: a planned step belongs to more than one group")
+			}
+			groupedSteps[sequenceNo] = true
+			if step.StepType != "exercise" {
+				return errors.New("invalid_input: groups may only reference exercise steps")
+			}
+			var prescription Prescription
+			if err := json.Unmarshal(step.Prescription, &prescription); err != nil {
+				return errors.New("invalid_input: grouped step prescription is invalid")
+			}
+			if len(prescription.Sets) != group.Rounds {
+				return errors.New("invalid_input: grouped exercise set count must equal group rounds")
+			}
+			for _, set := range prescription.Sets {
+				if set.RestSeconds == nil {
+					return errors.New("invalid_input: grouped exercise sets require explicit rest_seconds")
+				}
+			}
+			index := stepIndexes[sequenceNo]
+			if index < minIndex {
+				minIndex = index
+			}
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+		for index := minIndex; index <= maxIndex; index++ {
+			if !seenMembers[orderedSteps[index].SequenceNo] {
+				return errors.New("invalid_input: group members must be contiguous")
+			}
+		}
+	}
+	return nil
+}
+
+func (g PlannedStepGroup) NotesValue() string {
+	if g.Notes == nil {
+		return ""
+	}
+	return *g.Notes
 }
 
 func validateStep(step PlannedStep) error {
@@ -1046,7 +1338,7 @@ func sameWorkoutAggregate(stored StrengthWorkout, in WorkoutWrite) bool {
 }
 
 func samePlanDraft(stored PlanResult, in PlanWrite) bool {
-	if stored.Plan == nil || stored.Plan.ID != in.Plan.ID || stored.Plan.Title != in.Plan.Title ||
+	if stored.Plan == nil || stored.Plan.ID != in.Plan.ID || stored.Plan.IdempotencyKey != in.Plan.IdempotencyKey || stored.Plan.Title != in.Plan.Title ||
 		!sameString(stored.Plan.Description, in.Plan.Description) ||
 		!sameRawJSON(stored.Plan.Goal, rawOrEmptyObject(in.Plan.Goal)) ||
 		!sameString(stored.Plan.StartDate, in.Plan.StartDate) || !sameString(stored.Plan.EndDate, in.Plan.EndDate) ||
@@ -1059,7 +1351,7 @@ func samePlanDraft(stored PlanResult, in PlanWrite) bool {
 	}
 	for _, input := range in.Sessions {
 		storedSession, ok := byID[input.ID]
-		if !ok || storedSession.PlanID != in.Plan.ID || storedSession.Date != input.Date ||
+		if !ok || storedSession.IdempotencyKey != input.IdempotencyKey || storedSession.PlanID != in.Plan.ID || storedSession.Date != input.Date ||
 			storedSession.Sport != input.Sport || storedSession.SessionType != input.SessionType ||
 			storedSession.Priority != input.Priority || !reflect.DeepEqual(storedSession.Targets, input.Targets) ||
 			!sameString(storedSession.TitlePtr(), optionalString(input.TitleOrDefault())) ||
@@ -1073,11 +1365,45 @@ func samePlanDraft(stored PlanResult, in PlanWrite) bool {
 		}
 		for i := range steps {
 			left, right := storedSession.Steps[i], steps[i]
-			if left.ID != right.ID || left.SequenceNo != right.SequenceNo || left.StepType != right.StepType ||
+			if left.ID != right.ID || left.IdempotencyKey != right.IdempotencyKey || left.SequenceNo != right.SequenceNo || left.StepType != right.StepType ||
 				!sameString(left.ExerciseKey, right.ExerciseKey) || !sameString(left.ExerciseName, right.ExerciseName) ||
 				!sameRawJSON(left.Prescription, rawOrEmptyObject(right.Prescription)) || !sameString(left.Notes, right.Notes) {
 				return false
 			}
+		}
+		if !sameGroups(storedSession.Groups, input.Groups) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameGroups(left, right []PlannedStepGroup) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy := append([]PlannedStepGroup(nil), left...)
+	rightCopy := append([]PlannedStepGroup(nil), right...)
+	groupOrder := func(groups []PlannedStepGroup) {
+		sort.SliceStable(groups, func(i, j int) bool {
+			leftFirst, rightFirst := 0, 0
+			if len(groups[i].StepSequenceNos) > 0 {
+				leftFirst = groups[i].StepSequenceNos[0]
+			}
+			if len(groups[j].StepSequenceNos) > 0 {
+				rightFirst = groups[j].StepSequenceNos[0]
+			}
+			if leftFirst != rightFirst {
+				return leftFirst < rightFirst
+			}
+			return groups[i].ID < groups[j].ID
+		})
+	}
+	groupOrder(leftCopy)
+	groupOrder(rightCopy)
+	for i := range leftCopy {
+		if leftCopy[i].ID != rightCopy[i].ID || leftCopy[i].IdempotencyKey != rightCopy[i].IdempotencyKey || leftCopy[i].Label != rightCopy[i].Label || leftCopy[i].Mode != rightCopy[i].Mode || leftCopy[i].Rounds != rightCopy[i].Rounds || !sameString(leftCopy[i].Notes, rightCopy[i].Notes) || !reflect.DeepEqual(leftCopy[i].StepSequenceNos, rightCopy[i].StepSequenceNos) {
+			return false
 		}
 	}
 	return true
@@ -1143,6 +1469,9 @@ func compareWorkout(session PlannedSession, entries []StrengthEntry) *WorkoutCom
 		if entry.PlannedStepID != nil {
 			byStep[*entry.PlannedStepID] = append(byStep[*entry.PlannedStepID], entry)
 		}
+	}
+	for _, stepEntries := range byStep {
+		sort.SliceStable(stepEntries, func(i, j int) bool { return stepEntries[i].SequenceNo < stepEntries[j].SequenceNo })
 	}
 	for _, step := range session.Steps {
 		value := StepComparison{PlannedStepID: step.ID, ExerciseKey: step.ExerciseKey, ExerciseName: step.ExerciseName}

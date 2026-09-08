@@ -76,6 +76,59 @@ func TestTrainingContextMigrationDownAndUp(t *testing.T) {
 	}
 }
 
+func TestPlannedStepGroupsMigrationPreservesLegacyPlanGraph(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "fitness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpToContext(context.Background(), database, ".", 4); err != nil {
+		t.Fatal(err)
+	}
+	planID := "00000000-0000-7000-8000-000000000010"
+	sessionID := "00000000-0000-7000-8000-000000000011"
+	stepID := "00000000-0000-7000-8000-000000000012"
+	athleteID := "00000000-0000-0000-0000-000000000002"
+	if _, err := database.Exec(`INSERT INTO training_plans
+		(id, athlete_id, title, goal_raw, active, client_updated_at, server_synced_at)
+		VALUES (?, ?, 'Legacy plan', '{}', 0, 1, 1)`, planID, athleteID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO planned_sessions
+		(id, plan_id, athlete_id, session_date, sport, session_type, priority, targets_raw, status, client_updated_at, server_synced_at)
+		VALUES (?, ?, ?, '2026-09-07', 'strength', 'full_body', 'normal', '{}', 'planned', 1, 1)`, sessionID, planID, athleteID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO planned_session_steps
+		(id, planned_session_id, athlete_id, sequence_no, step_type, prescription_raw, created_at)
+		VALUES (?, ?, ?, 1, 'exercise', '{"sets":[{"reps_min":8}]}', 1)`, stepID, sessionID, athleteID); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpContext(context.Background(), database, "."); err != nil {
+		t.Fatal(err)
+	}
+	var gotPlan, gotSession, gotStep, gotGroups int
+	if err := database.QueryRow("SELECT count(*) FROM training_plans WHERE id=?", planID).Scan(&gotPlan); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM planned_sessions WHERE id=?", sessionID).Scan(&gotSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM planned_session_steps WHERE id=?", stepID).Scan(&gotStep); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM planned_step_groups").Scan(&gotGroups); err != nil {
+		t.Fatal(err)
+	}
+	if gotPlan != 1 || gotSession != 1 || gotStep != 1 || gotGroups != 0 {
+		t.Fatalf("legacy graph after migration = plan %d, session %d, step %d, groups %d", gotPlan, gotSession, gotStep, gotGroups)
+	}
+}
+
 func TestWorkoutAppMigrationBackfillsSequenceCursor(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "fitness.db"))
 	if err != nil {

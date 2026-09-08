@@ -247,6 +247,17 @@ func (a *API) GetWorkoutById(w http.ResponseWriter, r *http.Request, id AthleteI
 	writeJSON(w, http.StatusOK, converted)
 }
 
+func (a *API) DeleteWorkout(w http.ResponseWriter, r *http.Request, id AthleteID, workoutID WorkoutID) {
+	if !a.authorizeV2(w, r, id.String()) {
+		return
+	}
+	if err := a.repo.DeleteWorkoutAggregate(r.Context(), id.String(), workoutID.String()); err != nil {
+		writeRepoError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) SaveWorkout(w http.ResponseWriter, r *http.Request, id AthleteID, workoutID WorkoutID) {
 	if !a.authorizeV2(w, r, id.String()) {
 		return
@@ -331,7 +342,33 @@ func (a *API) PullSyncV2(w http.ResponseWriter, r *http.Request, params PullSync
 			writeError(w, http.StatusInternalServerError, "invalid sync entity ID")
 			return
 		}
-		changes = append(changes, SyncChangeV2{SyncSeq: change.SyncSeq, Kind: kind, Operation: op, EntityId: openapi_types.UUID(entityID), Entity: change.Entity})
+		var entity any
+		if change.Operation != "delete" {
+			switch change.Kind {
+			case "training_plan":
+				raw, ok := change.Entity.(fitnessrepo.TrainingPlan)
+				if !ok {
+					writeError(w, http.StatusInternalServerError, "invalid sync plan")
+					return
+				}
+				entity, err = apiPlan(fitnessrepo.PlanResult{Plan: &raw, Sessions: raw.Sessions})
+			case "workout":
+				raw, ok := change.Entity.(fitnessrepo.StrengthWorkout)
+				if !ok {
+					writeError(w, http.StatusInternalServerError, "invalid sync workout")
+					return
+				}
+				entity, err = apiWorkout(raw)
+			default:
+				writeError(w, http.StatusInternalServerError, "invalid sync entity kind")
+				return
+			}
+			if err != nil {
+				writeRepoError(w, err)
+				return
+			}
+		}
+		changes = append(changes, SyncChangeV2{SyncSeq: change.SyncSeq, Kind: kind, Operation: op, EntityId: openapi_types.UUID(entityID), Entity: entity})
 	}
 	writeJSON(w, http.StatusOK, SyncPageV2{Changes: changes, NextAfter: value.NextAfter, HasMore: value.HasMore})
 }
@@ -467,6 +504,26 @@ func apiPlannedSession(value fitnessrepo.PlannedSession) (PlannedSession, error)
 		}
 		result.Steps = append(result.Steps, converted)
 	}
+	if value.Groups != nil || value.Steps != nil {
+		storedGroups := value.Groups
+		if storedGroups == nil {
+			storedGroups = []fitnessrepo.PlannedStepGroup{}
+		}
+		groups := make([]PlannedStepGroup, 0, len(storedGroups))
+		for _, group := range storedGroups {
+			groupID, e := uuid.Parse(group.ID)
+			if e != nil {
+				return PlannedSession{}, errors.New("internal_error: planned step group ID")
+			}
+			converted := PlannedStepGroup{GroupId: openapi_types.UUID(groupID), Mode: PlannedStepGroupMode(group.Mode), Rounds: group.Rounds, StepSequenceNos: append([]int(nil), group.StepSequenceNos...), Notes: group.Notes}
+			if group.Label != "" {
+				label := group.Label
+				converted.Label = &label
+			}
+			groups = append(groups, converted)
+		}
+		result.Groups = &groups
+	}
 	date, err := apiDate(value.Date)
 	if err != nil {
 		return PlannedSession{}, err
@@ -562,7 +619,7 @@ func apiEntry(value fitnessrepo.StrengthEntry) (WorkoutEntry, error) {
 	if err != nil {
 		return WorkoutEntry{}, errors.New("internal_error: entry ID")
 	}
-	result := WorkoutEntry{EntryId: openapi_types.UUID(id), SequenceNo: value.SequenceNo, EntryType: WorkoutEntryEntryType(value.EntryType), ExerciseKey: value.ExerciseKey, ExerciseName: value.ExerciseName, UserLabel: value.UserLabel, SetNumber: value.SetNumber, Reps: float32Pointer(value.Reps), DurationSeconds: float32Pointer(value.DurationSeconds), LoadKg: float32Pointer(value.LoadKG), LoadDescription: value.LoadDescription, ToFailure: value.ToFailure, Rir: float32Pointer(value.RIR), RirMin: float32Pointer(value.RIRMin), RirMax: float32Pointer(value.RIRMax), Laterality: value.Laterality, Notes: value.Notes}
+	result := WorkoutEntry{EntryId: openapi_types.UUID(id), SequenceNo: value.SequenceNo, EntryType: WorkoutEntryEntryType(value.EntryType), ExerciseKey: value.ExerciseKey, ExerciseName: value.ExerciseName, UserLabel: value.UserLabel, SetNumber: value.SetNumber, Reps: float32Pointer(value.Reps), DurationSeconds: float32Pointer(value.DurationSeconds), LoadKg: float32Pointer(value.LoadKG), LoadDescription: value.LoadDescription, ToFailure: value.ToFailure, Rir: float32Pointer(value.RIR), RirMin: float32Pointer(value.RIRMin), RirMax: float32Pointer(value.RIRMax), Laterality: enumLaterality(value.Laterality), LoadBasis: enumLoadBasis(value.LoadBasis), LoadPerLimbKg: float32Pointer(value.LoadPerLimbKG), TotalExternalLoadKg: float32Pointer(value.TotalExternalLoadKG), AddedLoadKg: float32Pointer(value.AddedLoadKG), RepsPerSide: value.RepsPerSide, Notes: value.Notes}
 	if value.PlannedStepID != nil {
 		parsed, e := uuid.Parse(*value.PlannedStepID)
 		if e == nil {
@@ -581,19 +638,58 @@ func apiEntry(value fitnessrepo.StrengthEntry) (WorkoutEntry, error) {
 		groups := append([]string(nil), value.MuscleGroups...)
 		result.MuscleGroups = &groups
 	}
+	if len(value.DirectMuscleGroups) > 0 {
+		groups := append([]string(nil), value.DirectMuscleGroups...)
+		result.DirectMuscleGroups = &groups
+	}
+	if len(value.IndirectMuscleGroups) > 0 {
+		groups := append([]string(nil), value.IndirectMuscleGroups...)
+		result.IndirectMuscleGroups = &groups
+	}
 	return result, nil
+}
+
+func enumLaterality(value *string) *WorkoutEntryLaterality {
+	if value == nil {
+		return nil
+	}
+	parsed := WorkoutEntryLaterality(*value)
+	return &parsed
+}
+func enumLoadBasis(value *string) *WorkoutEntryLoadBasis {
+	if value == nil {
+		return nil
+	}
+	parsed := WorkoutEntryLoadBasis(*value)
+	return &parsed
 }
 
 func fromAPIWorkout(value Workout) fitnessrepo.WorkoutWrite {
 	entries := make([]fitnessrepo.StrengthEntry, 0, len(value.Entries))
 	for _, item := range value.Entries {
-		entry := fitnessrepo.StrengthEntry{EntryID: item.EntryId.String(), SequenceNo: item.SequenceNo, EntryType: string(item.EntryType), ExerciseKey: item.ExerciseKey, ExerciseName: item.ExerciseName, UserLabel: item.UserLabel, SetNumber: item.SetNumber, Reps: float64Pointer(item.Reps), DurationSeconds: float64Pointer(item.DurationSeconds), LoadKG: float64Pointer(item.LoadKg), LoadDescription: item.LoadDescription, IsBodyweight: item.IsBodyweight, ToFailure: item.ToFailure, RIR: float64Pointer(item.Rir), RIRMin: float64Pointer(item.RirMin), RIRMax: float64Pointer(item.RirMax), Laterality: item.Laterality, Notes: item.Notes}
+		var laterality *string
+		if item.Laterality != nil {
+			value := string(*item.Laterality)
+			laterality = &value
+		}
+		var loadBasis *string
+		if item.LoadBasis != nil {
+			value := string(*item.LoadBasis)
+			loadBasis = &value
+		}
+		entry := fitnessrepo.StrengthEntry{EntryID: item.EntryId.String(), SequenceNo: item.SequenceNo, EntryType: string(item.EntryType), ExerciseKey: item.ExerciseKey, ExerciseName: item.ExerciseName, UserLabel: item.UserLabel, SetNumber: item.SetNumber, Reps: float64Pointer(item.Reps), DurationSeconds: float64Pointer(item.DurationSeconds), LoadKG: float64Pointer(item.LoadKg), LoadDescription: item.LoadDescription, IsBodyweight: item.IsBodyweight, ToFailure: item.ToFailure, RIR: float64Pointer(item.Rir), RIRMin: float64Pointer(item.RirMin), RIRMax: float64Pointer(item.RirMax), Laterality: laterality, RepsPerSide: item.RepsPerSide, LoadBasis: loadBasis, LoadPerLimbKG: float64Pointer(item.LoadPerLimbKg), TotalExternalLoadKG: float64Pointer(item.TotalExternalLoadKg), AddedLoadKG: float64Pointer(item.AddedLoadKg), Notes: item.Notes}
 		if item.PlannedStepId != nil {
 			v := item.PlannedStepId.String()
 			entry.PlannedStepID = &v
 		}
 		if item.MuscleGroups != nil {
 			entry.MuscleGroups = append([]string(nil), (*item.MuscleGroups)...)
+		}
+		if item.DirectMuscleGroups != nil {
+			entry.DirectMuscleGroups = append([]string(nil), (*item.DirectMuscleGroups)...)
+		}
+		if item.IndirectMuscleGroups != nil {
+			entry.IndirectMuscleGroups = append([]string(nil), (*item.IndirectMuscleGroups)...)
 		}
 		if item.IsWarmup != nil {
 			entry.IsWarmup = *item.IsWarmup

@@ -24,6 +24,16 @@ export async function workouts(db: SQLiteDatabase, athleteID: string): Promise<W
 export async function saveDraft(db: SQLiteDatabase, workout: Workout): Promise<void> { await db.runAsync('INSERT INTO active_workout_drafts(workout_id,athlete_id,json,updated_at) VALUES(?,?,?,?) ON CONFLICT(workout_id) DO UPDATE SET json=excluded.json,updated_at=excluded.updated_at', workout.workout_id, workout.athlete_id, JSON.stringify(workout), Date.now()); }
 export async function activeDrafts(db: SQLiteDatabase, athleteID: string): Promise<Workout[]> { const rows = await db.getAllAsync<{ json: string }>("SELECT json FROM active_workout_drafts WHERE athlete_id=? AND json_extract(json,'$.status')='in_progress' ORDER BY updated_at DESC", athleteID); return rows.map((row) => JSON.parse(row.json) as Workout); }
 export async function deleteDraft(db: SQLiteDatabase, workoutID: string): Promise<void> { await db.runAsync('DELETE FROM active_workout_drafts WHERE workout_id=?', workoutID); }
+export async function activeTimerSeconds(db: SQLiteDatabase, workoutID: string): Promise<number | null> {
+  const row = await db.getFirstAsync<{ value: string }>('SELECT value FROM local_meta WHERE key=?', `active_timer:${workoutID}`);
+  if (!row) return null;
+  const value = Number(row.value);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+export async function saveActiveTimer(db: SQLiteDatabase, workoutID: string, elapsedSeconds: number): Promise<void> {
+  await db.runAsync('INSERT INTO local_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', `active_timer:${workoutID}`, String(Math.max(0, Math.floor(elapsedSeconds))));
+}
+export async function deleteActiveTimer(db: SQLiteDatabase, workoutID: string): Promise<void> { await db.runAsync('DELETE FROM local_meta WHERE key=?', `active_timer:${workoutID}`); }
 
 export async function applyChanges(db: SQLiteDatabase, athleteID: string, changes: SyncChange[], cursor: number): Promise<void> {
   await db.withTransactionAsync(async () => {
@@ -43,6 +53,6 @@ export async function applyChanges(db: SQLiteDatabase, athleteID: string, change
 
 export async function clearLocalData(db?: SQLiteDatabase): Promise<void> {
   const owned = db ?? await database();
-  await owned.withTransactionAsync(async () => { await owned.execAsync('DELETE FROM local_meta; DELETE FROM cached_plans; DELETE FROM cached_workouts; DELETE FROM active_workout_drafts; DELETE FROM outbox;'); });
+  await owned.withTransactionAsync(async () => { await owned.execAsync("DELETE FROM local_meta WHERE key <> 'schema_version'; DELETE FROM cached_plans; DELETE FROM cached_workouts; DELETE FROM active_workout_drafts; DELETE FROM outbox;"); });
   if (!db) await owned.closeAsync();
 }

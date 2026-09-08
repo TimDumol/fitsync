@@ -1,12 +1,11 @@
 [project]
 name = "garmin-fitness-sync"
 version = "0.1.0"
-description = "Sync Garmin fitness data to local exports and Neon Postgres."
+description = "Sync Garmin fitness data to local exports and Fitnessd."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "garminconnect==0.3.4",
-    "psycopg[binary]>=3.2,<4",
 ]
 
 [dependency-groups]

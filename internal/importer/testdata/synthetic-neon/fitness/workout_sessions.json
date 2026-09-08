@@ -1,3 +1,0 @@
-[
-  {"workout_id":"legacy-workout-1","workout_date":"2026-01-02","started_at":"2026-01-02T07:00:00Z","time_is_approximate":false,"title":"Synthetic Strength","workout_type":"strength","source":"manual","source_ref":"synthetic","garmin_activity_id":null,"default_rest_seconds_min":60,"default_rest_seconds_max":120,"notes":"synthetic fixture","raw_log":"{}","created_at":"2026-01-02T07:00:00Z","updated_at":"2026-01-02T07:30:00Z"}
-]

@@ -7,7 +7,6 @@ fitness_data_dir: "{{ fitness_deploy_root }}/data"
 fitnessd_data_dir: "{{ fitness_data_dir }}/fitnessd"
 pocketid_data_dir: "{{ fitness_data_dir }}/pocketid"
 fitness_archive_dir: "{{ fitness_deploy_root }}/archives"
-fitness_neon_dump_dir: "{{ fitness_deploy_root }}/neon_dump"
 fitness_secret_dir: "{{ fitness_deploy_root }}/secrets"
 fitness_rollback_dir: "{{ fitness_deploy_root }}/rollback"
 

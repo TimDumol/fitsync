@@ -49,6 +49,41 @@ func TestV2PlanAndWorkoutLifecycle(t *testing.T) {
 	if pull.StatusCode != http.StatusOK || !strings.Contains(string(pull.Body), "training_plan") || !strings.Contains(string(pull.Body), "workout") {
 		t.Fatalf("pull = %d %s", pull.StatusCode, pull.Body)
 	}
+	var page struct {
+		Changes []struct {
+			Kind   string          `json:"kind"`
+			Entity json.RawMessage `json:"entity"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal(pull.Body, &page); err != nil {
+		t.Fatalf("decode pull = %v", err)
+	}
+	for _, change := range page.Changes {
+		if change.Kind != "workout" {
+			continue
+		}
+		var entity map[string]json.RawMessage
+		if err := json.Unmarshal(change.Entity, &entity); err != nil {
+			t.Fatalf("decode workout entity = %v", err)
+		}
+		if _, ok := entity["summary"]; ok {
+			t.Fatal("sync workout leaked the repository-only summary field")
+		}
+		if _, ok := entity["entries"]; !ok {
+			t.Fatal("sync workout omitted entries")
+		}
+	}
+
+	deleted := postOrPutJSON(t, handler, http.MethodDelete, path, nil)
+	if deleted.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d body=%s", deleted.StatusCode, deleted.Body)
+	}
+	if gone := getStatus(t, handler, path); gone.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleted workout status = %d body=%s", gone.StatusCode, gone.Body)
+	}
+	if repeated := postOrPutJSON(t, handler, http.MethodDelete, path, nil); repeated.StatusCode != http.StatusNoContent {
+		t.Fatalf("repeated delete status = %d body=%s", repeated.StatusCode, repeated.Body)
+	}
 }
 
 func postOrPutJSON(t *testing.T, handler http.Handler, method, path string, value any) responseBody {

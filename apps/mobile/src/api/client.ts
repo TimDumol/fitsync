@@ -1,6 +1,7 @@
-import type { MeResponse, PlanStatus, SyncPage, TrainingPlan, Workout } from './generated';
-import { meResponseSchema, planResponseSchema, planSchema, plannedSessionsResponseSchema, plannedSessionSchema, publishPlanResponseSchema, syncPageSchema, workoutPageSchema, workoutSchema } from './runtime';
+import type { GarminSyncStatus, MeResponse, PlanStatus, SyncPage, TrainingPlan, Workout } from './generated';
+import { garminSyncStatusSchema, meResponseSchema, planResponseSchema, planSchema, plannedSessionsResponseSchema, plannedSessionSchema, publishPlanResponseSchema, syncPageSchema, workoutPageSchema, workoutSchema } from './runtime';
 import { apiBaseURL } from '../config';
+import { appLog, errorForLog } from '../logging/app-logger';
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string, public readonly requestID?: string) {
@@ -12,26 +13,49 @@ export class ApiError extends Error {
 export type TokenProvider = () => Promise<string | null>;
 
 export class ApiClient {
-  constructor(private readonly tokenProvider: TokenProvider, private readonly root = apiBaseURL) {}
+  private readonly root: string;
+
+  constructor(private readonly tokenProvider: TokenProvider, root = apiBaseURL) {
+    this.root = root.replace(/\/+$/, '');
+  }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const token = await this.tokenProvider();
-    const response = await fetch(`${this.root}${path}`, {
-      ...init,
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers },
-    });
-    if (!response.ok) {
-      let message = `Request failed (${response.status})`;
-      try {
-        const body = await response.json() as { error?: string; error_description?: string; message?: string };
-        message = body.error_description ?? body.error ?? body.message ?? message;
-      } catch { /* bounded error body is optional */ }
-      throw new ApiError(response.status, message, response.headers.get('x-request-id') ?? undefined);
+    const method = init.method ?? 'GET';
+    const startedAt = Date.now();
+    appLog('debug', 'api', 'Request started', { method, path });
+    try {
+      const token = await this.tokenProvider();
+      const response = await fetch(`${this.root}${path}`, {
+        ...init,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers },
+      });
+      const requestID = response.headers?.get('x-request-id') ?? undefined;
+      if (!response.ok) {
+        let message = `Request failed (${response.status})`;
+        try {
+          const body = await response.json() as { error?: string; error_description?: string; message?: string };
+          message = body.error_description ?? body.error ?? body.message ?? message;
+        } catch { /* bounded error body is optional */ }
+        appLog('warn', 'api', 'Request returned an error', { method, path, status: response.status, requestID, durationMs: Date.now() - startedAt, message });
+        throw new ApiError(response.status, message, requestID);
+      }
+      if (response.status === 204) {
+        appLog('debug', 'api', 'Request completed', { method, path, status: response.status, requestID, durationMs: Date.now() - startedAt });
+        return undefined as T;
+      }
+      const value = await response.json() as T;
+      appLog('debug', 'api', 'Request completed', { method, path, status: response.status, requestID, durationMs: Date.now() - startedAt });
+      return value;
+    } catch (caught) {
+      if (!(caught instanceof ApiError)) appLog('error', 'api', 'Request failed before a successful response', { method, path, durationMs: Date.now() - startedAt, error: errorForLog(caught) });
+      throw caught;
     }
-    return response.json() as Promise<T>;
   }
 
   async me(): Promise<MeResponse> { return meResponseSchema.parse(await this.request('/api/v2/me')); }
+  async garminSyncStatus(athleteID: string): Promise<GarminSyncStatus> {
+    return garminSyncStatusSchema.parse(await this.request(`/api/v2/athletes/${encodeURIComponent(athleteID)}/garmin/sync-status`));
+  }
   async activePlan(athleteID: string): Promise<TrainingPlan | null> {
     const result = planResponseSchema.parse(await this.request(`/api/v2/athletes/${encodeURIComponent(athleteID)}/training-plans/active`));
     return result.plan === null ? null : planSchema.parse(result.plan) as TrainingPlan;
@@ -64,6 +88,9 @@ export class ApiClient {
   }
   async completeWorkout(workout: Workout): Promise<Workout> {
     return workoutSchema.parse(await this.request(`/api/v2/athletes/${encodeURIComponent(workout.athlete_id)}/workouts/${encodeURIComponent(workout.workout_id)}/complete`, { method: 'POST', body: JSON.stringify(workout) })) as unknown as Workout;
+  }
+  async deleteWorkout(workout: Workout): Promise<void> {
+    await this.request<void>(`/api/v2/athletes/${encodeURIComponent(workout.athlete_id)}/workouts/${encodeURIComponent(workout.workout_id)}`, { method: 'DELETE' });
   }
   async pull(athleteID: string, after: number, limit = 50): Promise<SyncPage> {
     const result = await this.request<unknown>(`/api/v2/sync/pull?athlete_id=${encodeURIComponent(athleteID)}&after=${after}&limit=${limit}`);

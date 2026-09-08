@@ -1,7 +1,6 @@
 package fitnessrepo
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -58,15 +57,27 @@ func (r *Repository) DailyHealth(ctx context.Context, athleteID string, q Health
 	if err != nil {
 		return Page[DailyHealthItem]{}, err
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT record_date, dataset, payload_raw FROM garmin_records WHERE athlete_id=? AND record_date BETWEEN ? AND ? ORDER BY record_date, record_key`, athleteID, q.From, q.To)
+	// Include a bounded lookback so each returned signal can report the last
+	// observed value and its age without an unbounded historical query.
+	recordFrom := dateShift(q.From, -90)
+	rows, err := r.db.QueryContext(ctx, `SELECT record_date, dataset, payload_raw, ingested_at FROM garmin_records WHERE athlete_id=? AND record_date BETWEEN ? AND ? ORDER BY record_date, record_key`, athleteID, recordFrom, q.To)
 	if err != nil {
 		return Page[DailyHealthItem]{}, fmt.Errorf("internal_error: health query")
 	}
 	defer rows.Close()
 	byDate := map[string]*DailyHealthItem{}
+	signalRecords := map[string]map[string]signalObservation{}
+	napsByDate := map[string][]fitnessdata.NapSummary{}
+	napSourceByDate := map[string]bool{}
+	timezone, tzErr := r.AthleteTimezone(ctx, athleteID)
+	if tzErr != nil {
+		return Page[DailyHealthItem]{}, tzErr
+	}
+	location := mustLocation(timezone)
 	for rows.Next() {
 		var date, dataset, raw string
-		if err := rows.Scan(&date, &dataset, &raw); err != nil {
+		var ingestedAt int64
+		if err := rows.Scan(&date, &dataset, &raw, &ingestedAt); err != nil {
 			return Page[DailyHealthItem]{}, fmt.Errorf("internal_error: health row")
 		}
 		item := byDate[date]
@@ -80,10 +91,12 @@ func (r *Repository) DailyHealth(ctx context.Context, athleteID string, q Health
 			if value, e := fitnessdata.DecodeSleep(dataset, payload); e == nil {
 				item.Sleep = &value.Value
 				item.Completeness["sleep"] = true
+				noteSignal(signalRecords, date, "sleep", dataset, ingestedAt, value.Value.MainSleepHours != nil || value.Value.Score != nil)
 			}
 			if value, e := fitnessdata.DecodeHRV(dataset, payload); e == nil && value.Value.OvernightAverage != nil {
 				item.HRV = &value.Value
 				item.Completeness["hrv"] = true
+				noteSignal(signalRecords, date, "hrv", dataset, ingestedAt, true)
 			}
 			if value, e := fitnessdata.DecodeRecovery(dataset, payload); e == nil {
 				mergeHealthRecovery(item, value.Value)
@@ -92,18 +105,115 @@ func (r *Repository) DailyHealth(ctx context.Context, athleteID string, q Health
 			if value, e := fitnessdata.DecodeHRV(dataset, payload); e == nil {
 				item.HRV = &value.Value
 				item.Completeness["hrv"] = true
+				noteSignal(signalRecords, date, "hrv", dataset, ingestedAt, value.Value.OvernightAverage != nil || value.Value.WeeklyAverage != nil)
 			}
 		case "daily_recovery", "body_battery_events":
 			if value, e := fitnessdata.DecodeRecovery(dataset, payload); e == nil {
 				mergeHealthRecovery(item, value.Value)
+				if value.Value.HeartRate != nil {
+					noteSignal(signalRecords, date, "heart_rate", dataset, ingestedAt, value.Value.HeartRate.Resting != nil || value.Value.HeartRate.Minimum != nil || value.Value.HeartRate.Maximum != nil)
+				}
+				if value.Value.Stress != nil {
+					noteSignal(signalRecords, date, "stress", dataset, ingestedAt, value.Value.Stress.Average != nil || value.Value.Stress.Maximum != nil)
+				}
+				if value.Value.BodyBattery != nil {
+					noteSignal(signalRecords, date, "body_battery", dataset, ingestedAt, value.Value.BodyBattery.AtWake != nil || value.Value.BodyBattery.Highest != nil || value.Value.BodyBattery.Lowest != nil)
+				}
+			}
+			if value, e := fitnessdata.DecodeNapEvents(dataset, payload); e == nil && value.Value.Available {
+				// The detailed event date is authoritative. A recovery envelope
+				// may contain events for a neighboring UTC date around midnight.
+				for _, nap := range value.Value.Naps {
+					eventDate := date
+					if localDate := fitnessdata.NapLocalDate(nap, location); localDate != "" {
+						eventDate = localDate
+					}
+					napsByDate[eventDate] = append(napsByDate[eventDate], nap)
+					napSourceByDate[eventDate] = true
+				}
+				if len(value.Value.Naps) == 0 {
+					napSourceByDate[date] = true
+				}
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return Page[DailyHealthItem]{}, fmt.Errorf("internal_error: health rows")
 	}
+	for date, item := range byDate {
+		if item.Sleep == nil {
+			if len(napsByDate[date]) > 0 || napSourceByDate[date] {
+				item.Sleep = &fitnessdata.SleepSummary{}
+			}
+		}
+		if item.Sleep == nil {
+			continue
+		}
+		naps := napsByDate[date]
+		sort.SliceStable(naps, func(i, j int) bool {
+			left, right := "", ""
+			if naps[i].StartLocal != nil {
+				left = *naps[i].StartLocal
+			}
+			if naps[j].StartLocal != nil {
+				right = *naps[j].StartLocal
+			}
+			return left < right
+		})
+		if len(naps) > 8 {
+			naps = naps[:8]
+		}
+		if len(naps) > 0 {
+			var seconds float64
+			for _, nap := range naps {
+				seconds += nap.DurationSeconds
+			}
+			napHours := seconds / 3600
+			item.Sleep.Naps = append([]fitnessdata.NapSummary(nil), naps...)
+			item.Sleep.NapCount = len(naps)
+			item.Sleep.NapSleepHours = &napHours
+			item.Sleep.NapHours = &napHours
+			item.Sleep.NapSourceKnown = true
+		} else if napSourceByDate[date] {
+			zero := 0.0
+			item.Sleep.NapCount = 0
+			item.Sleep.NapSleepHours = &zero
+			item.Sleep.NapHours = &zero
+			item.Sleep.NapSourceKnown = true
+		}
+		if item.Sleep.MainSleepHours == nil {
+			item.Sleep.MainSleepHours = item.Sleep.MainHours
+		}
+		if item.Sleep.MainHours == nil {
+			item.Sleep.MainHours = item.Sleep.MainSleepHours
+		}
+		if item.Sleep.MainSleepHours != nil && item.Sleep.NapSleepHours != nil {
+			total := *item.Sleep.MainSleepHours + *item.Sleep.NapSleepHours
+			item.Sleep.TotalSleep24H = &total
+			item.Sleep.TotalHours = &total
+		}
+		if item.Sleep.TotalSleep24H == nil {
+			item.Sleep.TotalSleep24H = item.Sleep.TotalHours
+		}
+		if item.Sleep.TotalHours == nil {
+			item.Sleep.TotalHours = item.Sleep.TotalSleep24H
+		}
+	}
+	for date, item := range byDate {
+		if date < q.From || date > q.To {
+			continue
+		}
+		item.Sleep = ensureSleepStatus(item.Sleep, date, signalRecords)
+		item.HRV = ensureHRVStatus(item.HRV, date, signalRecords)
+		item.HeartRate = ensureHeartRateStatus(item.HeartRate, date, signalRecords)
+		item.Stress = ensureStressStatus(item.Stress, date, signalRecords)
+		item.BodyBattery = ensureBodyBatteryStatus(item.BodyBattery, date, signalRecords)
+	}
 	dates := make([]string, 0, len(byDate))
 	for date := range byDate {
+		if date < q.From || date > q.To {
+			continue
+		}
 		if cur != nil && ((order == "asc" && date <= cur.Date) || (order == "desc" && date >= cur.Date)) {
 			continue
 		}
@@ -125,21 +235,8 @@ func (r *Repository) DailyHealth(ctx context.Context, athleteID string, q Health
 			for _, metric := range q.Metrics {
 				wanted[metric] = true
 			}
-			if !wanted["sleep"] {
-				item.Sleep = nil
-			}
-			if !wanted["hrv"] {
-				item.HRV = nil
-			}
-			if !wanted["heart_rate"] {
-				item.HeartRate = nil
-			}
-			if !wanted["stress"] {
-				item.Stress = nil
-			}
-			if !wanted["body_battery"] {
-				item.BodyBattery = nil
-			}
+			// The five core status nodes are stable. metrics only controls
+			// optional projections below.
 			if !wanted["spo2"] {
 				item.SpO2 = nil
 			}
@@ -159,7 +256,19 @@ func (r *Repository) DailyHealth(ctx context.Context, athleteID string, q Health
 		encoded := encodeCursor(cursorData{Version: 1, Date: items[len(items)-1].Date, ID: items[len(items)-1].Date, Order: order, Filters: filterHash(q.From, q.To, strings.Join(q.Metrics, ","))})
 		next = &encoded
 	}
-	return Page[DailyHealthItem]{Items: items, NextCursor: next, DataStatus: r.dataStatus(ctx, athleteID, q.From, q.To)}, nil
+	dataStatus := r.dataStatus(ctx, athleteID, q.From, q.To)
+	for _, item := range items {
+		if item.Sleep != nil && !item.Sleep.NapSourceKnown {
+			dataStatus.Warnings = appendBoundedRepoWarnings(dataStatus.Warnings, Warning{Code: "NAP_SOURCE_UNAVAILABLE", Severity: "info", Message: "A nap source was not available for this health date."})
+		}
+		if item.HRV != nil && item.HRV.Stale {
+			dataStatus.Warnings = appendBoundedRepoWarnings(dataStatus.Warnings, Warning{Code: "STALE_HRV", Severity: "warning", Message: "The latest HRV observation is outside the two-day freshness window."})
+		}
+		if item.HeartRate != nil && item.HeartRate.Stale {
+			dataStatus.Warnings = appendBoundedRepoWarnings(dataStatus.Warnings, Warning{Code: "STALE_RESTING_HR", Severity: "warning", Message: "The latest resting-heart-rate observation is outside the two-day freshness window."})
+		}
+	}
+	return Page[DailyHealthItem]{Items: items, NextCursor: next, DataStatus: dataStatus}, nil
 }
 
 func mergeHealthRecovery(item *DailyHealthItem, value fitnessdata.DailyHealth) {
@@ -183,6 +292,95 @@ func mergeHealthRecovery(item *DailyHealthItem, value fitnessdata.DailyHealth) {
 		item.DailyActivity = value.DailyActivity
 		item.Completeness["daily_activity"] = true
 	}
+}
+
+type signalObservation struct {
+	Dataset    string
+	IngestedAt int64
+}
+
+const signalStaleAfterDays = 2
+
+func noteSignal(records map[string]map[string]signalObservation, date, signal, dataset string, ingestedAt int64, usable bool) {
+	if !usable {
+		return
+	}
+	if records[date] == nil {
+		records[date] = map[string]signalObservation{}
+	}
+	if old, ok := records[date][signal]; !ok || old.IngestedAt < ingestedAt {
+		records[date][signal] = signalObservation{Dataset: dataset, IngestedAt: ingestedAt}
+	}
+}
+
+func signalStatus(date, signal string, available bool, records map[string]map[string]signalObservation) fitnessdata.SignalStatus {
+	status := fitnessdata.SignalStatus{Available: available, ObservedDate: nil, LastObservedDate: nil, AgeDays: nil, Stale: false, SourceStatus: "unavailable", Provenance: fitnessdata.Provenance{Source: "garmin", Dataset: signal, Method: "unavailable", UpdatedAt: ""}}
+	if available {
+		observed := date
+		status.ObservedDate = &observed
+	}
+	latestDate := ""
+	latest := signalObservation{}
+	for candidate, values := range records {
+		if candidate <= date {
+			if _, ok := values[signal]; ok && (latestDate == "" || candidate > latestDate) {
+				latestDate, latest = candidate, values[signal]
+			}
+		}
+	}
+	if latestDate == "" {
+		return status
+	}
+	status.LastObservedDate = &latestDate
+	age := daysBetween(latestDate, date)
+	status.AgeDays = &age
+	status.Stale = age > signalStaleAfterDays
+	if available {
+		status.SourceStatus = "available"
+	} else if status.Stale {
+		status.SourceStatus = "stale"
+	} else {
+		status.SourceStatus = "unavailable"
+	}
+	updated := time.UnixMilli(latest.IngestedAt).UTC().Format(time.RFC3339)
+	status.Provenance = fitnessdata.Provenance{Source: "garmin", Dataset: latest.Dataset, Method: "decode_" + signal + "_v2", UpdatedAt: updated}
+	return status
+}
+
+func ensureSleepStatus(value *fitnessdata.SleepSummary, date string, records map[string]map[string]signalObservation) *fitnessdata.SleepSummary {
+	if value == nil {
+		value = &fitnessdata.SleepSummary{}
+	}
+	value.SignalStatus = signalStatus(date, "sleep", value.MainSleepHours != nil || value.Score != nil, records)
+	return value
+}
+func ensureHRVStatus(value *fitnessdata.HRVSummary, date string, records map[string]map[string]signalObservation) *fitnessdata.HRVSummary {
+	if value == nil {
+		value = &fitnessdata.HRVSummary{}
+	}
+	value.SignalStatus = signalStatus(date, "hrv", value.OvernightAverage != nil || value.WeeklyAverage != nil, records)
+	return value
+}
+func ensureHeartRateStatus(value *fitnessdata.HeartRateSummary, date string, records map[string]map[string]signalObservation) *fitnessdata.HeartRateSummary {
+	if value == nil {
+		value = &fitnessdata.HeartRateSummary{}
+	}
+	value.SignalStatus = signalStatus(date, "heart_rate", value.Resting != nil || value.Minimum != nil || value.Maximum != nil, records)
+	return value
+}
+func ensureStressStatus(value *fitnessdata.StressSummary, date string, records map[string]map[string]signalObservation) *fitnessdata.StressSummary {
+	if value == nil {
+		value = &fitnessdata.StressSummary{}
+	}
+	value.SignalStatus = signalStatus(date, "stress", value.Average != nil || value.Maximum != nil, records)
+	return value
+}
+func ensureBodyBatteryStatus(value *fitnessdata.BodyBatterySummary, date string, records map[string]map[string]signalObservation) *fitnessdata.BodyBatterySummary {
+	if value == nil {
+		value = &fitnessdata.BodyBatterySummary{}
+	}
+	value.SignalStatus = signalStatus(date, "body_battery", value.AtWake != nil || value.Highest != nil || value.Lowest != nil || value.MostRecent != nil, records)
+	return value
 }
 
 func (r *Repository) Activities(ctx context.Context, athleteID string, q ActivityQuery) (Page[fitnessdata.ActivitySummary], error) {
@@ -299,6 +497,12 @@ func (r *Repository) Activity(ctx context.Context, athleteID, activityID string,
 			}
 			d := detail.Value
 			d.Summary = value.Value
+			if d.HRZoneProvenance != nil {
+				d.HRZoneProvenance.EffectiveDate = date
+			}
+			if d.PowerZoneProvenance != nil {
+				d.PowerZoneProvenance.EffectiveDate = date
+			}
 			if !has(include, "splits") {
 				d.Splits = nil
 			}
@@ -310,6 +514,9 @@ func (r *Repository) Activity(ctx context.Context, athleteID, activityID string,
 				d.SourcePoints, d.ReturnedPoints, d.Truncated = 0, 0, false
 			}
 			result.Warnings = activityDetailWarnings(include, detail.Completeness, true)
+			for _, warning := range detail.Warnings {
+				result.Warnings = append(result.Warnings, Warning{Code: warning.Code, Severity: warning.Severity, Message: warning.Message})
+			}
 			if resolution <= 0 {
 				resolution = 30
 			}
@@ -501,6 +708,15 @@ func (r *Repository) StrengthWorkouts(ctx context.Context, athleteID string, q S
 	if order != "asc" && order != "desc" {
 		return Page[StrengthWorkout]{}, errors.New("invalid_input: order must be asc or desc")
 	}
+	canonicalKeys := make([]string, 0, len(q.ExerciseKeys))
+	for _, requested := range q.ExerciseKeys {
+		canonical, ok := exercisecatalog.NormalizeExercise(requested)
+		if !ok {
+			return Page[StrengthWorkout]{}, errors.New("invalid_input: unknown exercise_key")
+		}
+		canonicalKeys = append(canonicalKeys, canonical)
+	}
+	q.ExerciseKeys = canonicalKeys
 	filters := filterHash(q.From, q.To, strings.Join(q.ExerciseKeys, ",")+"|"+strings.Join(q.MuscleGroups, ","))
 	cur, err := decodeCursor(q.Cursor, order, filters)
 	if err != nil {
@@ -558,32 +774,39 @@ func (r *Repository) StrengthWorkouts(ctx context.Context, athleteID string, q S
 }
 
 type workoutMetadata struct {
-	WorkoutType      string          `json:"workout_type"`
-	StartedAt        *string         `json:"started_at"`
-	DurationMinutes  *float64        `json:"duration_minutes"`
-	PerceivedEffort  *float64        `json:"perceived_effort"`
-	LinkedActivityID *string         `json:"linked_activity_id"`
-	GarminActivityID json.RawMessage `json:"garmin_activity_id"`
-	Notes            *string         `json:"notes"`
+	WorkoutType      string   `json:"workout_type"`
+	StartedAt        *string  `json:"started_at"`
+	DurationMinutes  *float64 `json:"duration_minutes"`
+	PerceivedEffort  *float64 `json:"perceived_effort"`
+	LinkedActivityID *string  `json:"linked_activity_id"`
+	GarminActivityID *string  `json:"garmin_activity_id"`
+	Notes            *string  `json:"notes"`
 }
 type entryPayload struct {
-	ExerciseKey     *string  `json:"exercise_key"`
-	ExerciseName    *string  `json:"exercise_name"`
-	UserLabel       *string  `json:"user_label"`
-	SetNumber       *int     `json:"set_number"`
-	Reps            *float64 `json:"reps"`
-	DurationSeconds *float64 `json:"duration_seconds"`
-	LoadKG          *float64 `json:"load_kg"`
-	LoadDescription *string  `json:"load_description"`
-	IsBodyweight    *bool    `json:"is_bodyweight"`
-	ToFailure       *bool    `json:"to_failure"`
-	RIR             *float64 `json:"rir"`
-	RIRMin          *float64 `json:"rir_min"`
-	RIRMax          *float64 `json:"rir_max"`
-	Laterality      *string  `json:"laterality"`
-	MuscleGroups    []string `json:"muscle_groups"`
-	Notes           *string  `json:"notes"`
-	IsWarmup        bool     `json:"is_warmup"`
+	ExerciseKey          *string  `json:"exercise_key"`
+	ExerciseName         *string  `json:"exercise_name"`
+	UserLabel            *string  `json:"user_label"`
+	SetNumber            *int     `json:"set_number"`
+	Reps                 *float64 `json:"reps"`
+	DurationSeconds      *float64 `json:"duration_seconds"`
+	LoadKG               *float64 `json:"load_kg"`
+	LoadDescription      *string  `json:"load_description"`
+	IsBodyweight         *bool    `json:"is_bodyweight"`
+	ToFailure            *bool    `json:"to_failure"`
+	RIR                  *float64 `json:"rir"`
+	RIRMin               *float64 `json:"rir_min"`
+	RIRMax               *float64 `json:"rir_max"`
+	Laterality           *string  `json:"laterality"`
+	RepsPerSide          *bool    `json:"reps_per_side"`
+	LoadBasis            *string  `json:"load_basis"`
+	LoadPerLimbKG        *float64 `json:"load_per_limb_kg"`
+	TotalExternalLoadKG  *float64 `json:"total_external_load_kg"`
+	AddedLoadKG          *float64 `json:"added_load_kg"`
+	MuscleGroups         []string `json:"muscle_groups"`
+	DirectMuscleGroups   []string `json:"direct_muscle_groups"`
+	IndirectMuscleGroups []string `json:"indirect_muscle_groups"`
+	Notes                *string  `json:"notes"`
+	IsWarmup             bool     `json:"is_warmup"`
 }
 
 func decodeWorkout(id, date, title, source, raw string) *StrengthWorkout {
@@ -593,38 +816,12 @@ func decodeWorkout(id, date, title, source, raw string) *StrengthWorkout {
 	}
 	linked := m.LinkedActivityID
 	if linked == nil {
-		var ok bool
-		linked, ok = decodeMetadataString(m.GarminActivityID)
-		if !ok {
-			return nil
-		}
+		linked = m.GarminActivityID
 	}
 	return &StrengthWorkout{WorkoutID: id, Date: date, Title: title, Source: source, WorkoutType: m.WorkoutType, StartedAt: m.StartedAt, DurationMinutes: m.DurationMinutes, PerceivedEffort: m.PerceivedEffort, Notes: m.Notes, LinkedActivityID: linked}
 }
-
-func decodeMetadataString(raw json.RawMessage) (*string, bool) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return nil, true
-	}
-	decoder := json.NewDecoder(bytes.NewReader(trimmed))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, false
-	}
-	switch typed := value.(type) {
-	case string:
-		return &typed, true
-	case json.Number:
-		value := typed.String()
-		return &value, true
-	default:
-		return nil, false
-	}
-}
 func (r *Repository) entries(ctx context.Context, athleteID, sessionID string, include bool) ([]StrengthEntry, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,sequence_no,entry_type,payload_raw FROM workout_entries WHERE athlete_id=? AND session_id=? AND deleted_at IS NULL ORDER BY sequence_no,id`, athleteID, sessionID)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,sequence_no,entry_type,payload_raw,idempotency_key FROM workout_entries WHERE athlete_id=? AND session_id=? AND deleted_at IS NULL ORDER BY sequence_no,id`, athleteID, sessionID)
 	if err != nil {
 		return nil, errors.New("internal_error: entry query")
 	}
@@ -635,8 +832,9 @@ func (r *Repository) entries(ctx context.Context, athleteID, sessionID string, i
 	var result []StrengthEntry
 	for rows.Next() {
 		var id, typ, raw string
+		var idempotencyKey sql.NullString
 		var seq int
-		if err := rows.Scan(&id, &seq, &typ, &raw); err != nil {
+		if err := rows.Scan(&id, &seq, &typ, &raw, &idempotencyKey); err != nil {
 			return nil, errors.New("internal_error: entry row")
 		}
 		var p entryPayload
@@ -644,22 +842,30 @@ func (r *Repository) entries(ctx context.Context, athleteID, sessionID string, i
 			continue
 		}
 		groups := p.MuscleGroups
-		if len(groups) == 0 && p.ExerciseKey != nil {
-			groups = exercisecatalog.Groups(*p.ExerciseKey)
+		value := StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, RepsPerSide: p.RepsPerSide, LoadBasis: p.LoadBasis, LoadPerLimbKG: p.LoadPerLimbKG, TotalExternalLoadKG: p.TotalExternalLoadKG, AddedLoadKG: p.AddedLoadKG, MuscleGroups: groups, DirectMuscleGroups: p.DirectMuscleGroups, IndirectMuscleGroups: p.IndirectMuscleGroups, Notes: p.Notes, IsWarmup: p.IsWarmup}
+		if len(value.DirectMuscleGroups) == 0 && len(value.IndirectMuscleGroups) == 0 && len(p.MuscleGroups) > 0 {
+			value.DirectMuscleGroups = append([]string(nil), p.MuscleGroups...)
 		}
-		result = append(result, StrengthEntry{EntryID: id, SequenceNo: seq, EntryType: typ, ExerciseKey: p.ExerciseKey, ExerciseName: p.ExerciseName, UserLabel: p.UserLabel, SetNumber: p.SetNumber, Reps: p.Reps, DurationSeconds: p.DurationSeconds, LoadKG: p.LoadKG, LoadDescription: p.LoadDescription, IsBodyweight: p.IsBodyweight, ToFailure: p.ToFailure, RIR: p.RIR, RIRMin: p.RIRMin, RIRMax: p.RIRMax, Laterality: p.Laterality, MuscleGroups: groups, Notes: p.Notes, IsWarmup: p.IsWarmup})
+		applyNormalizedEntry(&value)
+		if idempotencyKey.Valid {
+			value.IdempotencyKey = idempotencyKey.String
+		}
+		result = append(result, value)
 	}
 	return result, rows.Err()
 }
 func summarizeStrength(entries []StrengthEntry) StrengthSummary {
-	sum := StrengthSummary{MuscleGroupSets: map[string]int{}}
+	sum := StrengthSummary{MuscleGroupSets: map[string]int{}, MuscleVolume: map[string]MuscleVolumeSummary{}, LoadMethod: "explicit_strength_load_v1"}
 	var volume float64
 	hasVolume := false
+	var normalizedVolume float64
+	hasNormalizedVolume := false
 	for _, e := range entries {
 		if e.EntryType != "set" || e.IsWarmup {
 			continue
 		}
 		sum.WorkingSets++
+		applyNormalizedEntry(&e)
 		if e.Reps != nil && e.LoadKG != nil {
 			volume += *e.Reps * *e.LoadKG
 			hasVolume = true
@@ -671,6 +877,22 @@ func summarizeStrength(entries []StrengthEntry) StrengthSummary {
 		for _, g := range groups {
 			sum.MuscleGroupSets[g]++
 		}
+		for _, g := range e.DirectMuscleGroups {
+			value := sum.MuscleVolume[g]
+			value.DirectSets++
+			value.WeightedSets = value.DirectSets + 0.5*value.IndirectSets
+			sum.MuscleVolume[g] = value
+		}
+		for _, g := range e.IndirectMuscleGroups {
+			value := sum.MuscleVolume[g]
+			value.IndirectSets++
+			value.WeightedSets = value.DirectSets + 0.5*value.IndirectSets
+			sum.MuscleVolume[g] = value
+		}
+		if e.NormalizedVolumeLoadKG != nil {
+			normalizedVolume += *e.NormalizedVolumeLoadKG
+			hasNormalizedVolume = true
+		}
 		if (e.ToFailure != nil && *e.ToFailure) || (e.RIR != nil && *e.RIR <= 1) || (e.RIRMax != nil && *e.RIRMax <= 1) {
 			sum.HighEffortSets++
 		}
@@ -678,14 +900,96 @@ func summarizeStrength(entries []StrengthEntry) StrengthSummary {
 	if hasVolume {
 		sum.VolumeLoadKG = &volume
 	}
+	if hasNormalizedVolume {
+		sum.NormalizedVolumeLoadKG = &normalizedVolume
+	}
 	return sum
+}
+
+func applyNormalizedEntry(entry *StrengthEntry) {
+	if entry.EntryType != "set" || entry.Reps == nil {
+		return
+	}
+	if len(entry.DirectMuscleGroups) == 0 && len(entry.IndirectMuscleGroups) == 0 && len(entry.MuscleGroups) == 0 && entry.ExerciseKey != nil {
+		entry.DirectMuscleGroups = exercisecatalog.DirectGroups(*entry.ExerciseKey)
+		entry.IndirectMuscleGroups = exercisecatalog.IndirectGroups(*entry.ExerciseKey)
+	}
+	newFields := entry.LoadBasis != nil || entry.RepsPerSide != nil || entry.LoadPerLimbKG != nil || entry.TotalExternalLoadKG != nil || entry.AddedLoadKG != nil
+	if !newFields {
+		entry.LoadSemantics = "ambiguous_legacy"
+		return
+	}
+	entry.LoadSemantics = "explicit"
+	reps := *entry.Reps
+	perSide := entry.RepsPerSide != nil && *entry.RepsPerSide
+	laterality := "unknown"
+	if entry.Laterality != nil {
+		laterality = *entry.Laterality
+	}
+	if perSide && (laterality == "unilateral" || laterality == "alternating") {
+		reps *= 2
+	}
+	entry.NormalizedReps = &reps
+	var load float64
+	loadKnown := false
+	basis := "unknown"
+	if entry.LoadBasis != nil {
+		basis = *entry.LoadBasis
+	}
+	if entry.TotalExternalLoadKG != nil {
+		load, loadKnown = *entry.TotalExternalLoadKG, true
+	} else if entry.LoadBasis != nil && *entry.LoadBasis == "total_external" && entry.LoadKG != nil {
+		load, loadKnown = *entry.LoadKG, true
+	} else if entry.LoadPerLimbKG != nil && basis == "per_limb" {
+		load, loadKnown = *entry.LoadPerLimbKG, true
+		if laterality == "bilateral" {
+			load *= 2
+		}
+	} else if entry.AddedLoadKG != nil && basis == "bodyweight_added" {
+		load, loadKnown = *entry.AddedLoadKG, true
+	}
+	if basis == "assistance" || basis == "unknown" {
+		loadKnown = false
+	}
+	if loadKnown && load >= 0 {
+		volume := reps * load
+		entry.NormalizedVolumeLoadKG = &volume
+	}
+}
+
+func validateStrengthEntry(entry StrengthEntry) error {
+	if entry.Laterality != nil {
+		switch *entry.Laterality {
+		case "bilateral", "unilateral", "left", "right", "alternating", "unknown":
+		default:
+			return errors.New("invalid_input: laterality")
+		}
+	}
+	if entry.RepsPerSide != nil && *entry.RepsPerSide && (entry.Laterality == nil || *entry.Laterality == "bilateral" || *entry.Laterality == "unknown") {
+		return errors.New("invalid_input: reps_per_side requires unilateral or alternating laterality")
+	}
+	if entry.LoadBasis != nil {
+		switch *entry.LoadBasis {
+		case "total_external", "per_limb", "bodyweight_added", "assistance", "unknown":
+		default:
+			return errors.New("invalid_input: load_basis")
+		}
+	}
+	return nil
 }
 func strengthMatches(w *StrengthWorkout, q StrengthQuery) bool {
 	if len(q.ExerciseKeys) == 0 && len(q.MuscleGroups) == 0 {
 		return true
 	}
 	for _, e := range w.Entries {
-		if containsOrEmpty(q.ExerciseKeys, deref(e.ExerciseKey)) && (len(q.MuscleGroups) == 0 || anyIn(e.MuscleGroups, q.MuscleGroups)) {
+		storedKey := ""
+		if e.ExerciseKey != nil {
+			storedKey, _ = exercisecatalog.NormalizeExercise(*e.ExerciseKey)
+		}
+		if storedKey == "" && e.ExerciseName != nil {
+			storedKey, _ = exercisecatalog.NormalizeExercise(*e.ExerciseName)
+		}
+		if containsOrEmpty(q.ExerciseKeys, storedKey) && (len(q.MuscleGroups) == 0 || anyIn(e.MuscleGroups, q.MuscleGroups)) {
 			return true
 		}
 	}
@@ -693,6 +997,13 @@ func strengthMatches(w *StrengthWorkout, q StrengthQuery) bool {
 }
 
 func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in WorkoutWrite) (WorkoutWinner, error) {
+	var normalizationErr error
+	if in, _, normalizationErr = normalizeWorkoutWrite(in); normalizationErr != nil {
+		return WorkoutWinner{}, normalizationErr
+	}
+	if err := validateIdempotencyKey(in.IdempotencyKey); err != nil {
+		return WorkoutWinner{}, err
+	}
 	tx, err := r.begin(ctx)
 	if err != nil {
 		return WorkoutWinner{}, err
@@ -712,7 +1023,7 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 		}
 		metadata := workoutMetadata{WorkoutType: in.WorkoutType, StartedAt: formatTime(in.StartedAt), DurationMinutes: in.DurationMinutes, PerceivedEffort: in.PerceivedEffort, LinkedActivityID: in.LinkedActivityID, Notes: in.Notes}
 		raw, _ := json.Marshal(metadata)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_sessions(id,athlete_id,workout_date,title,source,metadata_raw,client_updated_at,server_synced_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, clock, clock); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_sessions(id,athlete_id,workout_date,title,source,metadata_raw,client_updated_at,server_synced_at,created_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, clock, clock, nullableStringValue(optionalString(in.IdempotencyKey))); err != nil {
 			return rollback(normalizeWriteError(err))
 		}
 	} else {
@@ -731,7 +1042,7 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 		}
 		metadata := workoutMetadata{WorkoutType: in.WorkoutType, StartedAt: formatTime(in.StartedAt), DurationMinutes: in.DurationMinutes, PerceivedEffort: in.PerceivedEffort, LinkedActivityID: in.LinkedActivityID, Notes: in.Notes}
 		raw, _ := json.Marshal(metadata)
-		if _, err := tx.ExecContext(ctx, `UPDATE workout_sessions SET workout_date=?,title=?,source=?,metadata_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL WHERE id=?`, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, clock, in.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE workout_sessions SET workout_date=?,title=?,source=?,metadata_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL,idempotency_key=? WHERE id=?`, in.Date, in.Title, in.Source, string(raw), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(in.IdempotencyKey)), in.ID); err != nil {
 			return rollback(normalizeWriteError(err))
 		}
 	}
@@ -739,6 +1050,12 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 		return rollback(errors.New("internal_error: workout entries"))
 	}
 	for _, entry := range in.Entries {
+		if err := validateStrengthEntry(entry); err != nil {
+			return rollback(err)
+		}
+		if err := validateIdempotencyKey(entry.IdempotencyKey); err != nil {
+			return rollback(err)
+		}
 		if err := requireUUIDv7(entry.EntryID); err != nil {
 			return rollback(err)
 		}
@@ -750,9 +1067,9 @@ func (r *Repository) UpsertWorkout(ctx context.Context, athleteID string, in Wor
 		if entryLookup != nil && !errors.Is(entryLookup, sql.ErrNoRows) {
 			return rollback(errors.New("internal_error: workout entry lookup"))
 		}
-		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, MuscleGroups: entry.MuscleGroups, Notes: entry.Notes, IsWarmup: entry.IsWarmup}
+		payload := entryPayload{ExerciseKey: entry.ExerciseKey, ExerciseName: entry.ExerciseName, UserLabel: entry.UserLabel, SetNumber: entry.SetNumber, Reps: entry.Reps, DurationSeconds: entry.DurationSeconds, LoadKG: entry.LoadKG, LoadDescription: entry.LoadDescription, IsBodyweight: entry.IsBodyweight, ToFailure: entry.ToFailure, RIR: entry.RIR, RIRMin: entry.RIRMin, RIRMax: entry.RIRMax, Laterality: entry.Laterality, RepsPerSide: entry.RepsPerSide, LoadBasis: entry.LoadBasis, LoadPerLimbKG: entry.LoadPerLimbKG, TotalExternalLoadKG: entry.TotalExternalLoadKG, AddedLoadKG: entry.AddedLoadKG, MuscleGroups: entry.MuscleGroups, DirectMuscleGroups: entry.DirectMuscleGroups, IndirectMuscleGroups: entry.IndirectMuscleGroups, Notes: entry.Notes, IsWarmup: entry.IsWarmup}
 		raw, _ := json.Marshal(payload)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_entries(id,session_id,athlete_id,sequence_no,entry_type,payload_raw,client_updated_at,server_synced_at,deleted_at) VALUES(?,?,?,?,?,?,?, ?,NULL) ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id,athlete_id=excluded.athlete_id,sequence_no=excluded.sequence_no,entry_type=excluded.entry_type,payload_raw=excluded.payload_raw,client_updated_at=excluded.client_updated_at,server_synced_at=excluded.server_synced_at,deleted_at=NULL`, entry.EntryID, in.ID, athleteID, entry.SequenceNo, entry.EntryType, string(raw), in.ClientUpdatedAt, clock); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workout_entries(id,session_id,athlete_id,sequence_no,entry_type,payload_raw,client_updated_at,server_synced_at,deleted_at,idempotency_key) VALUES(?,?,?,?,?,?,?, ?,NULL,?) ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id,athlete_id=excluded.athlete_id,sequence_no=excluded.sequence_no,entry_type=excluded.entry_type,payload_raw=excluded.payload_raw,client_updated_at=excluded.client_updated_at,server_synced_at=excluded.server_synced_at,deleted_at=NULL,idempotency_key=excluded.idempotency_key`, entry.EntryID, in.ID, athleteID, entry.SequenceNo, entry.EntryType, string(raw), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(entry.IdempotencyKey))); err != nil {
 			return rollback(normalizeWriteError(err))
 		}
 	}
@@ -824,13 +1141,15 @@ func (r *Repository) DeleteWorkout(ctx context.Context, athleteID, id string, cl
 
 func (r *Repository) loadWorkoutWithDB(ctx context.Context, athleteID, id string) (StrengthWorkout, error) {
 	var date, title, source, raw string
-	if err := r.db.QueryRowContext(ctx, "SELECT workout_date,title,source,metadata_raw FROM workout_sessions WHERE id=? AND athlete_id=?", id, athleteID).Scan(&date, &title, &source, &raw); err != nil {
+	var syncSeq int64
+	if err := r.db.QueryRowContext(ctx, "SELECT workout_date,title,source,metadata_raw,sync_seq FROM workout_sessions WHERE id=? AND athlete_id=?", id, athleteID).Scan(&date, &title, &source, &raw, &syncSeq); err != nil {
 		return StrengthWorkout{}, errors.New("internal_error: workout read")
 	}
 	w := decodeWorkout(id, date, title, source, raw)
 	if w == nil {
 		return StrengthWorkout{}, errors.New("internal_error: workout payload")
 	}
+	w.SyncSeq = syncSeq
 	entries, err := r.entries(ctx, athleteID, id, true)
 	if err != nil {
 		return StrengthWorkout{}, err
@@ -841,12 +1160,20 @@ func (r *Repository) loadWorkoutWithDB(ctx context.Context, athleteID, id string
 }
 
 func (r *Repository) UpsertCheckin(ctx context.Context, athleteID string, in CheckinWrite) (CheckinWinner, error) {
+	if err := validateIdempotencyKey(in.IdempotencyKey); err != nil {
+		return CheckinWinner{}, err
+	}
 	timezone, err := r.AthleteTimezone(ctx, athleteID)
 	if err != nil {
 		return CheckinWinner{}, err
 	}
 	local := in.RecordedAt.In(mustLocation(timezone)).Format("2006-01-02")
-	raw, _ := json.Marshal(checkinContent{Energy: in.Energy, Fatigue: in.Fatigue, Motivation: in.Motivation, SleepQuality: in.SleepQuality, Stress: in.Stress, Soreness: in.Soreness, Pain: in.Pain, Illness: in.Illness, Notes: in.Notes})
+	painPresent := in.PainPresent
+	if painPresent == nil {
+		value := len(in.Pain) > 0
+		painPresent = &value
+	}
+	raw, _ := json.Marshal(checkinContent{SchemaVersion: in.SchemaVersion, Energy: in.Energy, Fatigue: in.Fatigue, Motivation: in.Motivation, SleepQuality: in.SleepQuality, Stress: in.Stress, Soreness: in.Soreness, Pain: in.Pain, Illness: in.Illness, Notes: in.Notes, LegFreshness: in.LegFreshness, PainPresent: painPresent})
 	clock := r.now()
 	tx, err := r.begin(ctx)
 	if err != nil {
@@ -865,12 +1192,12 @@ func (r *Repository) UpsertCheckin(ctx context.Context, athleteID string, in Che
 			_ = tx.Rollback()
 			return CheckinWinner{}, e
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO checkins(id,athlete_id,recorded_at_utc_ms,local_date,timezone,content_raw,client_updated_at,server_synced_at) VALUES(?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.RecordedAt.UnixMilli(), local, timezone, string(raw), in.ClientUpdatedAt, clock)
+		_, err = tx.ExecContext(ctx, `INSERT INTO checkins(id,athlete_id,recorded_at_utc_ms,local_date,timezone,content_raw,client_updated_at,server_synced_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)`, in.ID, athleteID, in.RecordedAt.UnixMilli(), local, timezone, string(raw), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(in.IdempotencyKey)))
 	} else if oldAthlete != athleteID {
 		_ = tx.Rollback()
 		return CheckinWinner{}, errors.New("not_found: checkin")
 	} else if in.ClientUpdatedAt > oldClock {
-		_, err = tx.ExecContext(ctx, `UPDATE checkins SET recorded_at_utc_ms=?,local_date=?,timezone=?,content_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL WHERE id=?`, in.RecordedAt.UnixMilli(), local, timezone, string(raw), in.ClientUpdatedAt, clock, in.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE checkins SET recorded_at_utc_ms=?,local_date=?,timezone=?,content_raw=?,client_updated_at=?,server_synced_at=?,deleted_at=NULL,idempotency_key=? WHERE id=?`, in.RecordedAt.UnixMilli(), local, timezone, string(raw), in.ClientUpdatedAt, clock, nullableStringValue(optionalString(in.IdempotencyKey)), in.ID)
 	}
 	if err != nil {
 		_ = tx.Rollback()
@@ -953,19 +1280,26 @@ func (r *Repository) readCheckin(ctx context.Context, athleteID, id string) (Che
 }
 
 type checkinContent struct {
-	Energy       *int       `json:"energy,omitempty"`
-	Fatigue      *int       `json:"fatigue,omitempty"`
-	Motivation   *int       `json:"motivation,omitempty"`
-	SleepQuality *int       `json:"sleep_quality,omitempty"`
-	Stress       *int       `json:"stress,omitempty"`
-	Soreness     []PainArea `json:"soreness,omitempty"`
-	Pain         []PainArea `json:"pain,omitempty"`
-	Illness      Illness    `json:"illness"`
-	Notes        *string    `json:"notes,omitempty"`
+	SchemaVersion int        `json:"schema_version,omitempty"`
+	Energy        *int       `json:"energy,omitempty"`
+	Fatigue       *int       `json:"fatigue,omitempty"`
+	Motivation    *int       `json:"motivation,omitempty"`
+	SleepQuality  *int       `json:"sleep_quality,omitempty"`
+	Stress        *int       `json:"stress,omitempty"`
+	Soreness      []PainArea `json:"soreness,omitempty"`
+	Pain          []PainArea `json:"pain,omitempty"`
+	Illness       Illness    `json:"illness"`
+	Notes         *string    `json:"notes,omitempty"`
+	LegFreshness  *int       `json:"leg_freshness,omitempty"`
+	PainPresent   *bool      `json:"pain_present,omitempty"`
 }
 
 func decodeCheckin(id string, at int64, date, timezone, raw string) Checkin {
 	var c checkinContent
 	_ = json.Unmarshal([]byte(raw), &c)
-	return Checkin{ID: id, RecordedAt: time.UnixMilli(at).UTC().Format(time.RFC3339), LocalDate: date, Timezone: timezone, Energy: c.Energy, Fatigue: c.Fatigue, Motivation: c.Motivation, SleepQuality: c.SleepQuality, Stress: c.Stress, Soreness: c.Soreness, Pain: c.Pain, Illness: c.Illness, Notes: c.Notes}
+	needsDetail := []string{}
+	if c.PainPresent != nil && *c.PainPresent && len(c.Pain) == 0 {
+		needsDetail = append(needsDetail, "pain")
+	}
+	return Checkin{ID: id, RecordedAt: time.UnixMilli(at).UTC().Format(time.RFC3339), LocalDate: date, Timezone: timezone, Energy: c.Energy, Fatigue: c.Fatigue, Motivation: c.Motivation, SleepQuality: c.SleepQuality, Stress: c.Stress, Soreness: c.Soreness, Pain: c.Pain, Illness: c.Illness, Notes: c.Notes, SchemaVersion: c.SchemaVersion, LegFreshness: c.LegFreshness, PainPresent: c.PainPresent, NeedsDetail: needsDetail}
 }

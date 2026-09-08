@@ -1,13 +1,19 @@
 import { StyleSheet, Text, View } from 'react-native';
+import { AppIcon } from './AppIcon';
+import { colors, radii, spacing } from '../ui/theme';
 
 export function SyncStatus({ syncing, pending, error }: { syncing: boolean; pending: number; error?: string | null }): JSX.Element {
-  if (error) return <View style={styles.error}><Text style={styles.errorTitle}>Sync error</Text><Text selectable style={styles.errorText}>{error}</Text></View>;
-  return <View style={styles.row}><Text style={styles.text}>{syncing ? 'Syncing…' : pending > 0 ? `${pending} pending` : 'Synced'}</Text></View>;
+  if (error) return <View style={styles.error}><AppIcon name="alert-circle-outline" size={18} color={colors.danger} /><View style={styles.errorCopy}><Text style={styles.errorTitle}>Sync error</Text><Text selectable style={styles.errorText}>{error}</Text></View></View>;
+  const label = syncing ? 'Syncing…' : pending > 0 ? `${pending} pending` : 'Synced';
+  return <View style={styles.row}><View style={[styles.dot, syncing && styles.dotActive]} /><Text style={styles.text}>{label}</Text></View>;
 }
 const styles = StyleSheet.create({
-  row: { paddingVertical: 4 },
-  text: { color: '#667085', fontSize: 12 },
-  error: { gap: 4, padding: 12, borderWidth: 2, borderColor: '#F04438', borderRadius: 10, backgroundColor: '#FEF3F2' },
-  errorTitle: { color: '#B42318', fontWeight: '700' },
-  errorText: { color: '#7A271A' },
+  row: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: spacing.sm, paddingVertical: spacing.xs },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
+  dotActive: { backgroundColor: colors.warmInk },
+  text: { color: colors.muted, fontSize: 12, fontWeight: '700' },
+  error: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: '#F5B8B3', borderRadius: radii.md, backgroundColor: colors.dangerSoft },
+  errorCopy: { flex: 1, gap: spacing.xs },
+  errorTitle: { color: colors.danger, fontWeight: '800' },
+  errorText: { color: '#8E2D27' },
 });

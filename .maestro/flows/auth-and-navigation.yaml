@@ -1,0 +1,22 @@
+appId: com.fitsync.mobile
+name: Authentication gate and tab navigation
+tags:
+  - smoke
+---
+- launchApp
+- assertVisible:
+    id: today-screen
+- tapOn: Settings
+- assertVisible:
+    id: settings-screen
+- assertVisible: ".*E2E-ATHLETE.*"
+- scrollUntilVisible:
+    element:
+      id: logout-button
+    direction: DOWN
+- tapOn:
+    id: logout-button
+- assertVisible:
+    id: sign-in-screen
+- assertVisible:
+    id: sign-in-button

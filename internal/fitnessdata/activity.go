@@ -82,6 +82,12 @@ func DecodeActivity(_ string, payload json.RawMessage) (DecoderResult[ActivitySu
 		speed := *activity.DistanceKM / (*activity.DurationMinutes / 60)
 		activity.SpeedKPH = &speed
 	}
+	if activity.DurationMinutes != nil {
+		activity.DurationDisplay = FormatDuration(*activity.DurationMinutes * 60)
+	}
+	if activity.PaceMinPerKM != nil {
+		activity.PaceDisplay = FormatPace(*activity.PaceMinPerKM)
+	}
 	activity.SourceType = strings.ToLower(activity.SourceType)
 	activity.Category = ActivityCategory(activity.SourceType)
 	activity.HRZoneMinutes = make([]*float64, 5)

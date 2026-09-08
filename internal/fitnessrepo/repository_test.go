@@ -25,16 +25,6 @@ func testDB(t *testing.T) *sql.DB {
 	return database
 }
 
-func TestDecodeWorkoutAcceptsNumericGarminActivityID(t *testing.T) {
-	workout := decodeWorkout("legacy-workout", "2026-09-02", "Imported workout", "garmin", `{"garmin_activity_id":123456789}`)
-	if workout == nil {
-		t.Fatal("numeric Garmin activity ID should be accepted")
-	}
-	if workout.LinkedActivityID == nil || *workout.LinkedActivityID != "123456789" {
-		t.Fatalf("linked activity ID = %#v", workout.LinkedActivityID)
-	}
-}
-
 func v7(t *testing.T) string {
 	t.Helper()
 	id, err := uuid.NewV7()
@@ -179,6 +169,83 @@ func TestActivityDetailWarningsIdentifyEmptySections(t *testing.T) {
 			t.Fatalf("warnings = %#v", value.Warnings)
 		}
 	}
+}
+
+func TestStrengthSemanticsAndPatchAreExplicitAndAtomic(t *testing.T) {
+	database := testDB(t)
+	repository := New(database, func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) })
+	workoutID, entryID := v7(t), v7(t)
+	reps, perLimb, load := 12.0, true, 15.0
+	laterality, basis := "unilateral", "per_limb"
+	value, err := repository.UpsertWorkout(context.Background(), testAthlete, WorkoutWrite{ID: workoutID, ClientUpdatedAt: 1, Date: "2026-09-04", Title: "Pull", WorkoutType: "strength", Source: "mobile", Entries: []StrengthEntry{{EntryID: entryID, SequenceNo: 1, EntryType: "set", ExerciseKey: stringPointer("one_arm_dumbbell_row"), Reps: &reps, LoadKG: &load, Laterality: &laterality, RepsPerSide: &perLimb, LoadBasis: &basis, LoadPerLimbKG: &load}}})
+	if err != nil || value.Workout.Summary.NormalizedVolumeLoadKG == nil || *value.Workout.Summary.NormalizedVolumeLoadKG != 360 || value.Workout.Entries[0].NormalizedReps == nil || *value.Workout.Entries[0].NormalizedReps != 24 {
+		t.Fatalf("explicit strength = %#v, %v", value, err)
+	}
+	if got := value.Workout.Summary.MuscleVolume["back"]; got.DirectSets != 1 || got.IndirectSets != 0 || got.WeightedSets != 1 {
+		t.Fatalf("direct muscle volume = %#v", value.Workout.Summary.MuscleVolume)
+	}
+	if got := value.Workout.Summary.MuscleVolume["biceps"]; got.IndirectSets != 1 || got.WeightedSets != 0.5 {
+		t.Fatalf("indirect muscle volume = %#v", value.Workout.Summary.MuscleVolume)
+	}
+
+	if _, err := repository.PatchWorkout(context.Background(), testAthlete, workoutID, value.Workout.SyncSeq, 2, []WorkoutPatchOperation{{Op: "set_entry_rir", EntryID: &entryID, RIR: testFloatPointer(2)}, {Op: "set_entry_rir", EntryID: stringPointer("missing"), RIR: testFloatPointer(1)}}); err == nil {
+		t.Fatal("invalid patch committed")
+	}
+	unchanged, err := repository.Workout(context.Background(), testAthlete, workoutID)
+	if err != nil || unchanged.Entries[0].RIR != nil {
+		t.Fatalf("atomic rollback = %#v, %v", unchanged, err)
+	}
+	patched, err := repository.PatchWorkout(context.Background(), testAthlete, workoutID, value.Workout.SyncSeq, 2, []WorkoutPatchOperation{{Op: "set_entry_rir", EntryID: &entryID, RIR: testFloatPointer(2)}})
+	if err != nil || patched.Workout.Workout.Entries[0].RIR == nil || *patched.Workout.Workout.Entries[0].RIR != 2 {
+		t.Fatalf("patched workout = %#v, %v", patched, err)
+	}
+}
+
+func TestDailyHealthReturnsStableSignalsAndFreshness(t *testing.T) {
+	database := testDB(t)
+	repository := New(database, func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) })
+	if _, err := repository.UpsertProfile(context.Background(), testAthlete, ProfileWrite{ClientUpdatedAt: 1, Profile: Profile{Timezone: "Europe/Madrid", Units: "metric"}}); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(dataset, key, date, raw string, ingested int64) {
+		t.Helper()
+		if _, err := database.Exec(`INSERT INTO garmin_records (id,athlete_id,dataset,record_key,record_date,payload_format,payload_raw,payload_sha256,ingested_at) VALUES (?,?,?,?,?,?,?,?,?)`, v7(t), testAthlete, dataset, key, date, "test", raw, strings.Repeat("e", 64), ingested); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("sleep", "sleep-2026-09-04", "2026-09-04", `{"sleep":{"dailySleepDTO":{"sleepTimeSeconds":22608,"napTimeSeconds":1800,"sleepScores":{"overall":{"value":59}}}}}`, 1234)
+	insert("body_battery_events", "bb-2026-09-04", "2026-09-04", `{"events":[{"eventType":"nap","eventStartTimeLocal":"2026-09-04T13:00:00+02:00","eventEndTimeLocal":"2026-09-04T13:30:00+02:00"}]}`, 1235)
+	insert("hrv", "hrv-2026-09-01", "2026-09-01", `{"hrv":{"hrvSummary":{"overnightAverage":0}}}`, 1236)
+	page, err := repository.DailyHealth(context.Background(), testAthlete, HealthQuery{From: "2026-09-04", To: "2026-09-04", Metrics: []string{"sleep"}, Limit: 10})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("health page = %#v, %v", page, err)
+	}
+	item := page.Items[0]
+	if item.Sleep == nil || item.HRV == nil || item.HeartRate == nil || item.Stress == nil || item.BodyBattery == nil {
+		t.Fatalf("stable core signals = %#v", item)
+	}
+	if item.Sleep.NapCount != 1 || item.Sleep.TotalSleep24H == nil || *item.Sleep.TotalSleep24H != 6.78 || item.Sleep.SignalStatus.Provenance.UpdatedAt != "1970-01-01T00:00:01Z" {
+		t.Fatalf("sleep freshness = %#v", item.Sleep)
+	}
+	if item.HRV.SignalStatus.Available || !item.HRV.SignalStatus.Stale || item.HRV.SignalStatus.AgeDays == nil || *item.HRV.SignalStatus.AgeDays != 3 {
+		t.Fatalf("stale HRV = %#v", item.HRV)
+	}
+	if item.SpO2 != nil {
+		t.Fatal("optional SpO2 should remain omitted when not requested")
+	}
+	if !hasWarning(page.DataStatus.Warnings, "STALE_HRV") {
+		t.Fatalf("health warnings = %#v", page.DataStatus.Warnings)
+	}
+}
+
+func testFloatPointer(value float64) *float64 { return &value }
+func hasWarning(values []Warning, code string) bool {
+	for _, value := range values {
+		if value.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func stringPointer(value string) *string { return &value }

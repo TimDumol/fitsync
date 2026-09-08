@@ -1,0 +1,153 @@
+appId: com.fitsync.mobile
+name: Record and finish a planned workout
+tags:
+  - smoke
+---
+- launchApp
+- tapOn:
+    id: start-workout-button
+- assertVisible:
+    id: planned-session-screen
+- scrollUntilVisible:
+    element:
+      id: session-start-workout-button
+    direction: DOWN
+- tapOn:
+    id: session-start-workout-button
+- assertVisible:
+    id: active-workout-screen
+- assertNotVisible:
+    id: rest-timer
+- tapOn:
+    id: workout-entry-1-reps
+- eraseText
+- inputText: "10"
+- tapOn:
+    id: workout-entry-1-load
+- eraseText
+- inputText: "18"
+- hideKeyboard
+- tapOn:
+    id: workout-entry-1-rest-button
+- assertVisible:
+    id: stop-rest-button
+- assertVisible:
+    id: rest-progress
+- assertVisible:
+    id: rest-progress-fill
+- tapOn:
+    id: stop-rest-button
+- tapOn:
+    id: add-set-button
+- tapOn:
+    id: add-unplanned-button
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- swipe:
+    start: 95%, 70%
+    end: 95%, 20%
+- tapOn:
+    id: workout-notes-input
+- inputText: "Maestro workout note"
+- hideKeyboard
+- swipe:
+    start: 50%, 85%
+    end: 50%, 15%
+- assertVisible:
+    id: finish-workout-button
+- tapOn:
+    id: finish-workout-button
+- assertVisible:
+    id: workout-summary-screen
+- assertVisible: Workout is pending sync.

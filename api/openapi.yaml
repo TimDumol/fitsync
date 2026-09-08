@@ -101,6 +101,43 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v2/athletes/{id}/ingest/garmin/batch:
+    post:
+      operationId: ingestGarminMobileBatch
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GarminBatchMultipart'
+      responses:
+        '200':
+          description: Garmin records committed for the authorized athlete.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GarminIngestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v2/athletes/{id}/garmin/sync-status:
+    get:
+      operationId: getGarminSyncStatus
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+      responses:
+        '200':
+          description: Server-derived Garmin ingest status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GarminSyncStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v2/athletes/{id}/training-plans/active:
     get:
       operationId: getActiveTrainingPlan
@@ -209,6 +246,18 @@ paths:
               schema: { $ref: '#/components/schemas/Workout' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteWorkout
+      security: [{BearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/AthleteID'
+        - $ref: '#/components/parameters/WorkoutID'
+      responses:
+        '204':
+          description: Workout deleted.
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
     put:
       operationId: saveWorkout
       security: [{BearerAuth: []}]
@@ -380,6 +429,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: Internal transaction failure.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
   schemas:
     Error:
       type: object
@@ -414,6 +468,30 @@ components:
           maxItems: 100
           items: { $ref: '#/components/schemas/HealthRecord' }
         next_cursor: { type: string }
+    GarminBatchMultipart:
+      type: object
+      description: The records JSON part and optional archive parts.
+      properties:
+        records:
+          type: string
+          format: binary
+          description: JSON metadata containing records and archive references.
+    GarminIngestResponse:
+      type: object
+      required: [athlete, records, archives]
+      properties:
+        athlete: { type: string }
+        records: { type: integer }
+        archives: { type: integer }
+    GarminSyncStatus:
+      type: object
+      required: [last_ingested_at, latest_record_date, datasets]
+      properties:
+        last_ingested_at: { type: string, format: date-time, nullable: true }
+        latest_record_date: { type: string, format: date, nullable: true }
+        datasets:
+          type: object
+          additionalProperties: { type: string, format: date }
     SyncMutation:
       type: object
       required: [kind, id, athlete_id, client_updated_at, deleted]
@@ -573,6 +651,26 @@ components:
           type: array
           maxItems: 50
           items: { $ref: '#/components/schemas/PlannedStep' }
+        groups:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PlannedStepGroup' }
+    PlannedStepGroup:
+      type: object
+      additionalProperties: false
+      required: [group_id, mode, rounds, step_sequence_nos]
+      properties:
+        group_id: { type: string, format: uuid }
+        label: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [rounds] }
+        rounds: { type: integer, minimum: 1, maximum: 20 }
+        step_sequence_nos:
+          type: array
+          minItems: 2
+          maxItems: 10
+          uniqueItems: true
+          items: { type: integer, minimum: 1, maximum: 50 }
+        notes: { type: string, nullable: true, maxLength: 4000 }
     PlannedStep:
       type: object
       required: [step_id, sequence_no, step_type, prescription]
@@ -659,8 +757,15 @@ components:
         rir: { type: number, nullable: true }
         rir_min: { type: number, nullable: true }
         rir_max: { type: number, nullable: true }
-        laterality: { type: string, nullable: true }
+        laterality: { type: string, nullable: true, enum: [bilateral, unilateral, left, right, alternating, unknown] }
+        reps_per_side: { type: boolean }
+        load_basis: { type: string, nullable: true, enum: [total_external, per_limb, bodyweight_added, assistance, unknown] }
+        load_per_limb_kg: { type: number, nullable: true, minimum: 0 }
+        total_external_load_kg: { type: number, nullable: true, minimum: 0 }
+        added_load_kg: { type: number, nullable: true, minimum: 0 }
         muscle_groups: { type: array, items: { type: string } }
+        direct_muscle_groups: { type: array, items: { type: string } }
+        indirect_muscle_groups: { type: array, items: { type: string } }
         notes: { type: string, nullable: true }
         is_warmup: { type: boolean }
     WorkoutPage:

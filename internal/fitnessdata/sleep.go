@@ -103,10 +103,11 @@ func DecodeSleep(_ string, payload json.RawMessage) (DecoderResult[SleepSummary]
 		return DecoderResult[SleepSummary]{}, err
 	}
 	mainSeconds := firstNumber(object, "sleep.dailySleepDTO.sleepTimeSeconds", "sleep_seconds", "main_sleep_seconds")
+	napSeconds := firstNumber(object, "sleep.dailySleepDTO.napTimeSeconds", "nap_seconds", "nap_duration_seconds")
 	mainHours := firstNumber(object, "main_sleep_hours")
 	s := SleepSummary{
 		MainHours:   mainSeconds,
-		NapHours:    firstNumber(object, "nap_seconds", "nap_duration_seconds"),
+		NapHours:    napSeconds,
 		DeepHours:   firstNumber(object, "sleep.dailySleepDTO.deepSleepSeconds", "deep_sleep_seconds"),
 		LightHours:  firstNumber(object, "sleep.dailySleepDTO.lightSleepSeconds", "light_sleep_seconds"),
 		REMHours:    firstNumber(object, "sleep.dailySleepDTO.remSleepSeconds", "rem_sleep_seconds"),
@@ -133,22 +134,46 @@ func DecodeSleep(_ string, payload json.RawMessage) (DecoderResult[SleepSummary]
 	if s.AwakeHours != nil {
 		*s.AwakeHours /= 3600
 	}
-	if s.NapHours != nil {
+	if s.NapHours != nil && napSeconds != nil {
 		*s.NapHours /= 3600
 	}
-	if hours := firstNumber(object, "total_sleep_including_naps_hours", "total_sleep_hours"); hours != nil {
-		s.TotalHours = hours
-	} else if s.MainHours != nil || s.NapHours != nil {
-		var total float64
-		if s.MainHours != nil {
-			total += *s.MainHours
-		}
-		if s.NapHours != nil {
-			total += *s.NapHours
-		}
-		s.TotalHours = &total
+	if napHours := firstNumber(object, "nap_hours"); napHours != nil && napSeconds == nil {
+		s.NapHours = napHours
 	}
+	s.NapSourceKnown = hasNested(object, "sleep.dailySleepDTO.napTimeSeconds", "nap_seconds", "nap_duration_seconds", "nap_hours")
+	s.MainSleepHours = s.MainHours
+	s.NapSleepHours = s.NapHours
+	if total := firstNumber(object, "total_sleep_including_naps_hours"); total != nil {
+		s.TotalSleep24H = total
+	} else if s.MainHours != nil && s.NapSourceKnown && s.NapHours != nil {
+		total := *s.MainHours + *s.NapHours
+		s.TotalSleep24H = &total
+	}
+	s.TotalHours = s.TotalSleep24H
 	return DecoderResult[SleepSummary]{Value: s, Completeness: Availability{
 		"sleep": s.MainHours != nil || s.Score != nil,
 	}}, nil
+}
+
+func hasNested(object map[string]any, paths ...string) bool {
+	for _, path := range paths {
+		current := any(object)
+		found := true
+		for _, part := range splitPath(path) {
+			m, ok := current.(map[string]any)
+			if !ok {
+				found = false
+				break
+			}
+			current, ok = m[part]
+			if !ok {
+				found = false
+				break
+			}
+		}
+		if found && current != nil {
+			return true
+		}
+	}
+	return false
 }

@@ -1,3 +1,0 @@
-[
-  {"entry_id":42,"workout_id":"legacy-workout-1","sequence_no":1,"entry_type":"set","exercise_key":"synthetic_press","exercise_name":"Synthetic Press","user_label":null,"set_number":1,"reps":5,"duration_seconds":null,"load_kg":10,"load_description":"10 kg","is_bodyweight":false,"to_failure":false,"rir_min":2,"rir_max":2,"laterality":null,"notes":null}
-]

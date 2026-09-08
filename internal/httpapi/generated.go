@@ -49,6 +49,11 @@ const (
 	PlannedStepStepTypeWarmup   PlannedStepStepType = "warmup"
 )
 
+// Defines values for PlannedStepGroupMode.
+const (
+	Rounds PlannedStepGroupMode = "rounds"
+)
+
 // Defines values for SyncChangeKind.
 const (
 	SyncChangeKindDocument SyncChangeKind = "document"
@@ -97,6 +102,25 @@ const (
 	WorkoutEntryEntryTypeSet  WorkoutEntryEntryType = "set"
 )
 
+// Defines values for WorkoutEntryLaterality.
+const (
+	WorkoutEntryLateralityAlternating WorkoutEntryLaterality = "alternating"
+	WorkoutEntryLateralityBilateral   WorkoutEntryLaterality = "bilateral"
+	WorkoutEntryLateralityLeft        WorkoutEntryLaterality = "left"
+	WorkoutEntryLateralityRight       WorkoutEntryLaterality = "right"
+	WorkoutEntryLateralityUnilateral  WorkoutEntryLaterality = "unilateral"
+	WorkoutEntryLateralityUnknown     WorkoutEntryLaterality = "unknown"
+)
+
+// Defines values for WorkoutEntryLoadBasis.
+const (
+	WorkoutEntryLoadBasisAssistance      WorkoutEntryLoadBasis = "assistance"
+	WorkoutEntryLoadBasisBodyweightAdded WorkoutEntryLoadBasis = "bodyweight_added"
+	WorkoutEntryLoadBasisPerLimb         WorkoutEntryLoadBasis = "per_limb"
+	WorkoutEntryLoadBasisTotalExternal   WorkoutEntryLoadBasis = "total_external"
+	WorkoutEntryLoadBasisUnknown         WorkoutEntryLoadBasis = "unknown"
+)
+
 // ActivityPage defines model for ActivityPage.
 type ActivityPage struct {
 	Items      []HealthRecord `json:"items"`
@@ -117,6 +141,26 @@ type AthleteUnits string
 // Error defines model for Error.
 type Error struct {
 	Error string `json:"error"`
+}
+
+// GarminBatchMultipart The records JSON part and optional archive parts.
+type GarminBatchMultipart struct {
+	// Records JSON metadata containing records and archive references.
+	Records *openapi_types.File `json:"records,omitempty"`
+}
+
+// GarminIngestResponse defines model for GarminIngestResponse.
+type GarminIngestResponse struct {
+	Archives int    `json:"archives"`
+	Athlete  string `json:"athlete"`
+	Records  int    `json:"records"`
+}
+
+// GarminSyncStatus defines model for GarminSyncStatus.
+type GarminSyncStatus struct {
+	Datasets         map[string]openapi_types.Date `json:"datasets"`
+	LastIngestedAt   *time.Time                    `json:"last_ingested_at"`
+	LatestRecordDate *openapi_types.Date           `json:"latest_record_date"`
 }
 
 // HealthPage defines model for HealthPage.
@@ -158,6 +202,7 @@ type PlannedSession struct {
 	CompletedWorkoutId  *openapi_types.UUID  `json:"completed_workout_id"`
 	Date                openapi_types.Date   `json:"date"`
 	Description         *string              `json:"description"`
+	Groups              *[]PlannedStepGroup  `json:"groups,omitempty"`
 	Notes               *string              `json:"notes"`
 	PlanId              openapi_types.UUID   `json:"plan_id"`
 	Priority            string               `json:"priority"`
@@ -191,6 +236,19 @@ type PlannedStep struct {
 
 // PlannedStepStepType defines model for PlannedStep.StepType.
 type PlannedStepStepType string
+
+// PlannedStepGroup defines model for PlannedStepGroup.
+type PlannedStepGroup struct {
+	GroupId         openapi_types.UUID   `json:"group_id"`
+	Label           *string              `json:"label,omitempty"`
+	Mode            PlannedStepGroupMode `json:"mode"`
+	Notes           *string              `json:"notes"`
+	Rounds          int                  `json:"rounds"`
+	StepSequenceNos []int                `json:"step_sequence_nos"`
+}
+
+// PlannedStepGroupMode defines model for PlannedStepGroup.Mode.
+type PlannedStepGroupMode string
 
 // PlannedTargets defines model for PlannedTargets.
 type PlannedTargets struct {
@@ -361,31 +419,44 @@ type WorkoutStatus string
 
 // WorkoutEntry defines model for WorkoutEntry.
 type WorkoutEntry struct {
-	DurationSeconds *float32              `json:"duration_seconds"`
-	EntryId         openapi_types.UUID    `json:"entry_id"`
-	EntryType       WorkoutEntryEntryType `json:"entry_type"`
-	ExerciseKey     *string               `json:"exercise_key"`
-	ExerciseName    *string               `json:"exercise_name"`
-	IsBodyweight    *bool                 `json:"is_bodyweight,omitempty"`
-	IsWarmup        *bool                 `json:"is_warmup,omitempty"`
-	Laterality      *string               `json:"laterality"`
-	LoadDescription *string               `json:"load_description"`
-	LoadKg          *float32              `json:"load_kg"`
-	MuscleGroups    *[]string             `json:"muscle_groups,omitempty"`
-	Notes           *string               `json:"notes"`
-	PlannedStepId   *openapi_types.UUID   `json:"planned_step_id"`
-	Reps            *float32              `json:"reps"`
-	Rir             *float32              `json:"rir"`
-	RirMax          *float32              `json:"rir_max"`
-	RirMin          *float32              `json:"rir_min"`
-	SequenceNo      int                   `json:"sequence_no"`
-	SetNumber       *int                  `json:"set_number"`
-	ToFailure       *bool                 `json:"to_failure,omitempty"`
-	UserLabel       *string               `json:"user_label"`
+	AddedLoadKg          *float32                `json:"added_load_kg"`
+	DirectMuscleGroups   *[]string               `json:"direct_muscle_groups,omitempty"`
+	DurationSeconds      *float32                `json:"duration_seconds"`
+	EntryId              openapi_types.UUID      `json:"entry_id"`
+	EntryType            WorkoutEntryEntryType   `json:"entry_type"`
+	ExerciseKey          *string                 `json:"exercise_key"`
+	ExerciseName         *string                 `json:"exercise_name"`
+	IndirectMuscleGroups *[]string               `json:"indirect_muscle_groups,omitempty"`
+	IsBodyweight         *bool                   `json:"is_bodyweight,omitempty"`
+	IsWarmup             *bool                   `json:"is_warmup,omitempty"`
+	Laterality           *WorkoutEntryLaterality `json:"laterality"`
+	LoadBasis            *WorkoutEntryLoadBasis  `json:"load_basis"`
+	LoadDescription      *string                 `json:"load_description"`
+	LoadKg               *float32                `json:"load_kg"`
+	LoadPerLimbKg        *float32                `json:"load_per_limb_kg"`
+	MuscleGroups         *[]string               `json:"muscle_groups,omitempty"`
+	Notes                *string                 `json:"notes"`
+	PlannedStepId        *openapi_types.UUID     `json:"planned_step_id"`
+	Reps                 *float32                `json:"reps"`
+	RepsPerSide          *bool                   `json:"reps_per_side,omitempty"`
+	Rir                  *float32                `json:"rir"`
+	RirMax               *float32                `json:"rir_max"`
+	RirMin               *float32                `json:"rir_min"`
+	SequenceNo           int                     `json:"sequence_no"`
+	SetNumber            *int                    `json:"set_number"`
+	ToFailure            *bool                   `json:"to_failure,omitempty"`
+	TotalExternalLoadKg  *float32                `json:"total_external_load_kg"`
+	UserLabel            *string                 `json:"user_label"`
 }
 
 // WorkoutEntryEntryType defines model for WorkoutEntry.EntryType.
 type WorkoutEntryEntryType string
+
+// WorkoutEntryLaterality defines model for WorkoutEntry.Laterality.
+type WorkoutEntryLaterality string
+
+// WorkoutEntryLoadBasis defines model for WorkoutEntry.LoadBasis.
+type WorkoutEntryLoadBasis string
 
 // WorkoutPage defines model for WorkoutPage.
 type WorkoutPage struct {
@@ -437,6 +508,9 @@ type Conflict = Error
 
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
+
+// InternalError defines model for InternalError.
+type InternalError = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
@@ -501,6 +575,9 @@ type PullSyncV2Params struct {
 // PushSyncJSONRequestBody defines body for PushSync for application/json ContentType.
 type PushSyncJSONRequestBody = SyncPushRequest
 
+// IngestGarminMobileBatchMultipartRequestBody defines body for IngestGarminMobileBatch for multipart/form-data ContentType.
+type IngestGarminMobileBatchMultipartRequestBody = GarminBatchMultipart
+
 // SaveWorkoutJSONRequestBody defines body for SaveWorkout for application/json ContentType.
 type SaveWorkoutJSONRequestBody = Workout
 
@@ -522,6 +599,12 @@ type ServerInterface interface {
 	// (POST /api/v1/sync/push)
 	PushSync(w http.ResponseWriter, r *http.Request)
 
+	// (GET /api/v2/athletes/{id}/garmin/sync-status)
+	GetGarminSyncStatus(w http.ResponseWriter, r *http.Request, id AthleteID)
+
+	// (POST /api/v2/athletes/{id}/ingest/garmin/batch)
+	IngestGarminMobileBatch(w http.ResponseWriter, r *http.Request, id AthleteID)
+
 	// (GET /api/v2/athletes/{id}/planned-sessions)
 	GetPlannedSessions(w http.ResponseWriter, r *http.Request, id AthleteID, params GetPlannedSessionsParams)
 
@@ -539,6 +622,9 @@ type ServerInterface interface {
 
 	// (GET /api/v2/athletes/{id}/workouts)
 	GetWorkouts(w http.ResponseWriter, r *http.Request, id AthleteID, params GetWorkoutsParams)
+
+	// (DELETE /api/v2/athletes/{id}/workouts/{workoutId})
+	DeleteWorkout(w http.ResponseWriter, r *http.Request, id AthleteID, workoutId WorkoutID)
 
 	// (GET /api/v2/athletes/{id}/workouts/{workoutId})
 	GetWorkoutById(w http.ResponseWriter, r *http.Request, id AthleteID, workoutId WorkoutID)
@@ -776,6 +862,68 @@ func (siw *ServerInterfaceWrapper) PushSync(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PushSync(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetGarminSyncStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetGarminSyncStatus(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGarminSyncStatus(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// IngestGarminMobileBatch operation middleware
+func (siw *ServerInterfaceWrapper) IngestGarminMobileBatch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.IngestGarminMobileBatch(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1076,6 +1224,46 @@ func (siw *ServerInterfaceWrapper) GetWorkouts(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetWorkouts(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteWorkout operation middleware
+func (siw *ServerInterfaceWrapper) DeleteWorkout(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id AthleteID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "workoutId" -------------
+	var workoutId WorkoutID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "workoutId", r.PathValue("workoutId"), &workoutId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workoutId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteWorkout(w, r, id, workoutId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1405,12 +1593,15 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/v1/athletes/{id}/health/daily", wrapper.GetDailyHealth)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v1/sync/pull", wrapper.PullSync)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1/sync/push", wrapper.PushSync)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/garmin/sync-status", wrapper.GetGarminSyncStatus)
+	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/ingest/garmin/batch", wrapper.IngestGarminMobileBatch)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/planned-sessions", wrapper.GetPlannedSessions)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/planned-sessions/{sessionId}/skip", wrapper.SkipPlannedSession)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/active", wrapper.GetActiveTrainingPlan)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/{planId}", wrapper.GetTrainingPlanById)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/training-plans/{planId}/publish", wrapper.PublishTrainingPlan)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/workouts", wrapper.GetWorkouts)
+	m.HandleFunc("DELETE "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}", wrapper.DeleteWorkout)
 	m.HandleFunc("GET "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}", wrapper.GetWorkoutById)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}", wrapper.SaveWorkout)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v2/athletes/{id}/workouts/{workoutId}/complete", wrapper.CompleteWorkout)
@@ -1423,60 +1614,70 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/+xcW4/btrP/KgLPeVRsr5sU/+O39JI2QNsEyZ70IQ0EWhxb7EqkQlK7cQN/9z940dWS",
-	"RdlrY4v2zZbI4XDmx+FwZqivKOZZzhkwJdHqK8qxwBkoEObfS5WkoOD1D/oPZWiFcqwSFCKGM0ArRAkK",
-	"kYDPBRVA0EqJAkIk4wQyrHtsuMiwQitUFKal2uW6l1SCsi3a70P0fSEkFxX1zwWIXU0+tm+bJDP85Rdg",
-	"W5Wg1fLFt30kXwme/YAVDBHdCJ75cU00lWNDvMkV5QynI0NNIf2axWlB4L2CXA6RpbZNJE2jJn0CG1yk",
-	"qpyTI7/mPAXMDP1faEbVEOHUvOyIm2ZFhlY3i0WIMsrcv4o2ZQq2IGraH5b+1Ct2XyzCaUO9TTEbRGWu",
-	"X56LzPcgJeXDg0j3/txxbvkxsCp+JlRvuQ9QzTBTyP7OxR0v1KB0Htz786Sz151lzpkEsxi+w+QdfC5A",
-	"GgTHnClg5ifO85TGWE9y/qfkTD+rh/lfARu0Qv8zr03d3L6V8x+F4MIORUDGghpJoRV6ze5xSkkg7IAz",
-	"pK0VZ5uUxlcY/ddCGXpB7IaUwQNVSYC3WwFbrCBI6QbiXZxCIIoUpOHvFRdrSgiwyzP4G1cBLlTCBf0L",
-	"SLDhIlAJlUHCCwkJT4lh6DeuXvGCkcvz8w4kL0QMAeMq2OgxDQO3nP+CxRauwYDBSQBfYgAijeLothBA",
-	"grVmx2ro/1kttMvz9LJQCTDlqAblQnSc5ILHICVep3BNQGOmVbSGwIxiuNmXRsE6HbGi91Tt3mKrt1zw",
-	"HISi1gZQBVn7xzF+fgacquQdxFwQPesMf3lt+5ldxhkcLATe6dcMvqgornySQ7tX27KPjoFPFRW+/hNi",
-	"pck4t8mIkhBqbe/bxjQ2OJUQdmaGba+IEg/bGKIEM2I1d/BK0Qz+4qz/ZcGodfWA6f31I8pACRo3JjIw",
-	"3wZ/1eiNsfoEYeFwoEMoHx8f0Dbro2vV+vcFSGvUgxkQrLAE1as9Svofsy1IBSTCqgUeytS3z9GhCxWi",
-	"HO9SjjU1w7XmJCLOExnZ/6v2d7DzkIKGSzmlVtf2uDVL7en0ye9XeOf8gqlrLNYmj65TiByc/aFSruoW",
-	"SpY9IMH18vekF+Mcr2lKKzb9Z6SdXdnQQuXsh0juWNz/xrlnvf32B/LutwMo7JVmZzJ92tPO+4n607M1",
-	"XdL0zQatPh6X8K3AlFG21QOi/acQsSJN7X6nRAHdiRniQwwzIO5IcFmzrqeh25MIu33Q9WzzfrSnU+/A",
-	"kKOEvM1Aa4tvnc2fLxYLj5EYdwtweletLF+Z5oJyQdWu13S6g5wvrbK5fdFHL+ei33ZLhVXR2npzCyzU",
-	"UB4KkbyjeW6fYhZDmgLp2Z1DZM//vuarBLGCvG3CXvSYMKWdZuVL89a11h2pSqGj0Rc3yzHfoqGEWrVh",
-	"2+UoUWhGKOXcUUhD1/UkKsmXIhtf4/JE++SYma4V26+rmAPN9Ivt+Iy0wqfNAr6AiKmEcoNv6PJm+R+P",
-	"xVkRsOGAw7DdRS2DaJulo+JvtjWr+3MBLIaI8Vb468VISMoiy9uG6LalASltwQMWWZGjWnjGD1Ig7nFq",
-	"XCWpjJ3gKeEPDFkRjXvtJV/tuTV56EjsCJRua6swAU2ESqXtWHSXHdnHWJGtrSRJIcxRMcooKxwKRjsl",
-	"gIWKBFYQlSefUaBoZzO623rRz3EMmqEoBxHdZVGGv5zWjzKvfsKZ9oGGTeCB8mq579NrZ6mcotU6W1At",
-	"kEU4PsFKyxJizohsLbf/fPu8FQRehKPTOw0CA2qdNJMBFU+iIUyIqBtxnyyCEgt+W09D+e9BjZ1rxvDz",
-	"HtRUCD06BBoruiK09JVje/FVUDhHH5YQZY9ASKrHE5OgosPRVAHlMEzgxoOAgiznHiu0F3TFOqUyOeMU",
-	"iUWc0Hsg0ZFDhNcBBK2mHEB9j5vvdyz+PsFsC/5HXd2njLGifdgNKd1RRprOhnMcUYiAKZMJIjwuMmCq",
-	"/6QB4h5EpAMK/jGmznQNCz2kDiXwqSWDD8uJ2gWm7FlvH7rfvn5ZV0rKqc/gBFVhk14RaQ5wuY+WBIpc",
-	"gjmkEDAhk17Z7lgcSfh8ikyrvmEp3pqN5uSHUFYh5iAGOTVqkVJgKipyfUgbREjTxhxaJSsj0h+xKuHZ",
-	"cyTpO146XFdOdvcE4xtXPXPdtIKs3bPF8eNEKypxCBqT7PKamW0aGdvhITffA3y1Gnyjxv3m4PCYfwil",
-	"GhpDOH6LT7ATsTEv/v5SyySNRlASLKOMC+iHs8kj4I0CccqyLzlv0WkMOSimIk2bW+ZjycM3cSIpi+GU",
-	"CTd6hxWfw7OUSaNMYAIiMmcOp8mgse12pZBRVv4dieTUQx+f1pDyHihjIKYx7qm8DqflSH18tvydy4bJ",
-	"BeBJ+a6zY9XAhhNko523HKfDAml1qqU5JcT9qIHHm76sVr3lTNxiRoUjlT64nyzbw7A6EXijTH5K0Xvo",
-	"RNdL5/98Z+zkaPdAgLuMbBuwNIPWVvJh0907Gvl11VmXT1RhQeWxyNEAsBs5LnWg8meKZvC4aapTAorA",
-	"lKATdkMn8x+NW9gJpfSsppSyuxNyfFVYfLRlDiIGc8iFzcZlpEYn7fJRkawzndNsSIfAqWfrKe6tNh5n",
-	"IunQguhonuBbAVJ2zAehMsaCXNd+1M625+Ismw9kKbtbek18JOdWWaLSNpXL5IgZskvi/NCg15L1Puu3",
-	"z4f1+U7VuZaBBEt4kB+bng8b7UFltOZk9wB0m6j+MwSVkcsZ9b5OsQKBU5f29kuGdJykR82gZIWMU4i2",
-	"ghedrPUB2YPDg7/VK+3PcDZulMZI6qWekQuj+rTzzheZtp45ookBBRW5rl5pJcWjDaZpMXSCLSSIKMVr",
-	"SP3CuE17Uy3UblKysSiPGJSy7m+CPZlWFOjGmV4POE0MQ/WBRltxIajavdccueJ3wAKELunV/9bm36sS",
-	"22/082VgC7ICxe+AlRX9Rm+mdW0GE6VyW6VL2caAp7Xy0c9lFXewoYppklJxgbcQYEaCjK9pCoHe6xLB",
-	"Gf3LVva+fPt69gf7AELv/MEyKCTIAAc24PuMPzAgQanuwMrM1I3XNe0dirM/2E9YZJQFth5QkzVEJeRY",
-	"6A5KC1vO/mDVHrVCryzHRPODQnRv+UErdDNbzBYuVMtwTtEKfTNbzL4xlYcqMUKe45zO72/mZTnb/Csl",
-	"+7nz0hyWtjbRVUVaXxO0Qj+Belm3Clv3qAZC93WTeX3Pah+ONq4uOHm0veW+Le3FII+G7srW/lPncsZy",
-	"sXi0MvJWCXhfYbt7H9gCUltb/3yxGKJbMTpvXCExXb4Z71LfqjA9no/3qK496A43HkNU1xSaa98Ap7nq",
-	"P37af9IN+kGamJriOcE03R2D6Q+6gS1A/henZ+K0UYfeg1Ij6cCZMKuefzZgtX2f50WaDuJTR6h1aPIQ",
-	"mX3X1sqIsMcNM58U1EWhchB/7wGMbhO48LbZaVUCgXYxgoRuk2cPWIEIMizurgWfE5QrjXuSc9mrXZk4",
-	"7bprdd9xsntkEdfB//1+38XG/uIabgTp+zSsuL4RZmPoxvuBexC7QBbrjCoFJCgTAVe0ENMWfIieL5fj",
-	"Hdr3yyYgadnZ19yR7lkzwj20t3WKeP+O+1vrAvhFLdJQxXMPbF3ToNRBQJmxTW4VAwmIdseFtlxPzzaN",
-	"IWr+tbrMvZ/r4vthC/b+juZtuV0WY/Ut9CtCoddw2TsJQd5GwuxUp+T/xntUt63PUHVZwfNM8y3nLiE0",
-	"doiDVh7zDAVfWmfH1qydiVFYGHAR6NhE8JAACxhnEFAZWGnMrrv4Ohr5aj/WsD+mk6Y2vtuZbwpccMm5",
-	"T0s8OVN9TNdvmFV0HUuZXeW08OgwmOe2uPOYD2kaPNYK9cfDRfXbU9Latw3bZs4MmxNCmc22TygBpuiG",
-	"gnjqhrl5A3Vo3f9etrmKG1d9I8XbnZvSo/w2zhMJXDQj6T1Ac6+DhErFxe7pu3QlnOZfqy/P7D2gdfnd",
-	"pP5QzjX0ObQ3OKE8ue0hRHnR52XjeyhndFXtPH5MoqWY68UijuDBhSAoe1ZWOJTwuGZQctI2c8GgpI8h",
-	"mZf1H8Neyfeuxb+ovRBqXyqe0Rin6S6oqnH+2bjNjp5jf7Vx8QspqvH9leOfnQISuPUVrDlXUgmcB5TZ",
-	"sHwdP7jxiSc2vpw1SVD+WYcPS7+8Q6tE6oyP/w1Qd+X8Pd9JXIQTMxrheZ9iHLv2fvmMib3Y0beNuUqC",
-	"Z1wQ0BtaXUbgMihPx2utbtBZSBUidTUYcjXXKJ1hQUHOFM1IkfF0FvNM34L77wA8xF3JnFUAAA==",
+	"H4sIAAAAAAAC/+xcX3PbOJL/KizcPdKS7Emm9vSWmdnM+moyScW+7EMmxYKIlog1CTAAaEeT0ne/wh/+",
+	"FSiSkqX11u6bLQKNRvcPjUY3Gt9RzLOcM2BKouV3lGOBM1AgzH9vVJKCgttf9D+UoSXKsUpQiBjOAC0R",
+	"JShEAr4WVABBSyUKCJGME8iw7rHmIsMKLVFRmJZqm+teUgnKNmi3C9HPhZBcVNS/FiC2NfnYfm2SzPC3",
+	"34BtVIKWN69/9JF8K3j2C1bQR3QteDaOa6KpHBrifa4oZzgdGGoK6VsWpwWBOwW57CNLbZtImkZN+gTW",
+	"uEhVOSdHfsV5CpgZ+r/RjKo+wqn52BE3zYoMLa8XixBllLn/KtqUKdiAqGl/uhlPvWL39SKcNtSHFLNe",
+	"VOb646nIvAMpKe8fRLrvp45zzw+BVfEToXrPxwDVDDOF7N+5eOCF6pXOk/t+mnR2urPMOZNgFsNPmHyE",
+	"rwVIg+CYMwXM/InzPKUx1pOc/0Nypn+rh/lvAWu0RP81r03d3H6V878KwYUdioCMBTWSQkt0yx5xSkkg",
+	"7IAzpK0VZ+uUxhcY/V2hDL0gdkPK4ImqJMCbjYANVhCkdA3xNk4hEEUK0vD3losVJQTY+Rn8nasAFyrh",
+	"gv4JJFhzEaiEyiDhhYSEp8QwdMsUCIZTS+YCOrPDBUpgJnFsJLjGNC0EGH5+5+otLxg5PysfQfJCxBAw",
+	"roK1HtMwcM/5b1hs4BIMGNwG8C0GINIAiW4KASRYaXYsYv6P1Uo8P09vCpUAU45qUBoGx0kueAxS4lUK",
+	"l1xgmGkVrSAwoxhudqWRsk5QrOgjVdsP2OotFzwHoai1SVRB1v7jED9/A5yq5CPEXBA96wx/u7X9zK7n",
+	"DCAWAm/1ZwbfVBRXPtK+Ha5t62fHwJeKCl/9A2KlyTg3zoiSEGr3gg+NaaxxKiHszAzbXhElI2x1iBLM",
+	"iNXc3idFM/iTM//HglHregLT+/1nlIESNG5MpGe+Df6q0Rtj+QRR2aH2TKH8+fCAtpmP7q9YZJT9hFWc",
+	"vCtSRXMslHVwmpi7TyAQRvUy+N+7978HulmAGQm4258DLOKEPoL5ImeoqxLXe5+0IZeBwgQrrNe6wpRR",
+	"tqnG06OUxAWsQQCLwYxQKXZFGTZOwb4UeiZ8yzYg1Ue3Re/L1Q0oG6KtnLiw1J8XFI2Jerw/DwpQ3Ses",
+	"x+3X1d2WxXcKq0Lus61lKEHJ/vUy6CJ5xk2xVBE1EgMSYbVH5UpDF4WIFWlqjWDLi69Jp1iBVJGdb0Sc",
+	"+9jlaIBMR4x73HmHCWvZ+ERrrdu/rp1sjdoHCy9eKfH/3KNuytSPr1DoWRQ53qYca2rVKujVcM+qiR5g",
+	"O0IKpNYmanVtj1uz1J6OT37voGkLpmw1sd756SqFyK3n8VApN7cWSm48IGnYm5H0YpzjFU1pxeb4Gekz",
+	"aNN8VWfwEMkti/1f3KnJ22/fpPQaQp80O5PxaU+fqY/Un56t6ZKm79do+fmwhO+F3Zz0gGj3pWuquhMz",
+	"xPsYZkDcSf283o2ehm5PIuzcQddz0FrXPZ16e4YcJDTaDLRcg1bI7NVisRgx0kbwIh+/Aks9KMh/1T3b",
+	"S/G1z15zt8Kn86bRMFZpuaBcULX12mYXwBlLq2xuP/jo5Vz4NwdZ+Rmli5tbiaEGOlCI5APNc/srZjGk",
+	"KRCPFxwiG/c7QjvDilH6cKrG0rx3rXVHqlLoaPT19c2Q29FQQq3asO3alzA3I5Ry7iikoet6EpXkS5EN",
+	"GxF5pAF0zEzXiu3XVcyeZvxiOzwjrfBps4BvIGIqofQgGrq8vvnLiMVZEbBhwP1w/SCFUyyDaNu9g+Jv",
+	"tjWr+2sBLIaI8VbY+/VAKNoia7QN0W1LA1LagicssiJHtfCMo6VAPOLU+GJSGTvBU8KfGLIiGj4dl3y1",
+	"59bkoSOxAShZyz4NT2YfGSucFK8g9aFur2XGSUuCwsSzvKbyBDg5qk003IxDQ0PgbYMwAVbNA49pWzq2",
+	"Hctg4idfC3Cfff5TpQUnuWpqPnYPoOC+3hsmYIBQqfRuFj1kB9wlVmQrO3FSCBOYizLKCqe8wU4JYKEi",
+	"gRVEZZxp+BTNMYkeNqPo5zgGzVCUg4gesijD347rR9mofsJt8D0Nm4ADNaqlLyLxoWMwj9FqnSuu8LwI",
+	"hydYaVlCzLvL7C8/vmqlABfh4PSOg0CPWifNpEfFk2h4TM31YroISiyMc0Aayr8DNXR8HsLPHaipEHp2",
+	"CDRWdMNkj6TTXnwVFE7RhyVE2TMQkur5xCSo6HA0VUA59BO4HkFAQZbzESvUC7pilVKZnBCscNFhEh04",
+	"So46hqLllDjH2KiGjkz/nGC2gfERFd2nzGihXdiNXD5QRpoOkzs+oBABUybkT3hcZMCU/7wJ4hFEpONW",
+	"40OZnekaFjyk9iXwpSWDTzcTtQtM2RP/LnR/j3VAu1JSTn0GJ6iKznlFpDnA5T5aEihyCeaoSsBE5ryy",
+	"3bJYe2DHyLTqG5birdloTr4PZRVi9hM3E4NjKQWmoiLXR/VehDRtzL5VsjIi/sBoCU/PwdQXZHC4ro5a",
+	"gyeKnvD9ieumFcvvnjAPHyNasal90JirBaNmZptGxnaMkNvYME61GsYmJ/zmYD/Ysw+lGhp9OP6Aj7AT",
+	"sTEv4/2llkkajKMlWEYZF+CHs0lX4bUCccyyLzlv0WkM2SumIk37c7XHy2Nsfk5SFsMxE270Dis++2cp",
+	"k8YlsQmIyJw5nCaDxrbblUJ9ar8eiOfVQx+eVp/ynihjIKYxPlJ5HU7LkXx8tvyd82ZjBOBJadWTUyLA",
+	"js60h2jDcdovkFanWppTEh3PGn6+9iVP6y1n4hYzKByp9MH9aNnuJ1eIwGtl0qCKPkInx1I6/6c7Y0fn",
+	"PHrSHGV+w4Clmbqwkg+b7t7B+L+7m3v+fCgWVB6KHPUAu5FKPeESzPhs6DEBRWBK0Am7oZP5X41b2Aml",
+	"eFZTStnDEankKpo92DIHEYM55MJ67fKSg5N2WclI1gn1aTakQ+DYs/UU91YbjxORtG9BdDRP8I0AKTvm",
+	"g1AZY0Euaz9qZ3vk4iyb9+Squ1t6TXwg81pZotI2lcvkgBmyS2KiLSIESNQM502KLVMBsYqyQsYpRJ67",
+	"DH139arl6QtNjjIZo2MN7fNpfb5UdcavJ80X7mVpp2dlB3tQdroQqYxWnGyfgG4S5T8HURm57Kf3c4oV",
+	"CJy6CxylkFbU/W5zX/U/KZhtX5jxQoRTUwygNHu65QPT6dMv4cjM0ApL2jIKiiucRvDNUNXj6YB/SrMV",
+	"ClE90chgVw8vpcuRHDN6x1991mSWaVsyf8wCOwEUE3awci/pz68P0hhIo3VC/lokkpKeM7uLmg+TomJ0",
+	"etC0HZkSnBg/UpHrOiqLqHjkymT8k29j/2jLXEiNujLPP+2CcmVeuxcaGqb0wDZUXkqesAtNu7Hsxpl+",
+	"WXmaGPouLxulx4WganunOXIFc4AFCF12o/9bmf/elqvovf79JrC3RQPFH4CVVYBG/aZ1vXklSuW2koay",
+	"Nd8vQfhbWfkVrKlimqRUXOANmNqDjK9oCoH2kBLBGf3TVt+8+XA7+4N9AqH9xeAmKCTIAAc2TXDFnxiQ",
+	"oFR3YGVmas3qOrgOxdkfzF7wD+xlZU3WEJWQY6E7KC1sOfuDVZ7NEr21HBPNDwrRo+UHLdH1bDFbuAA/",
+	"wzlFS/TDbDH7wVyLVokR8hzndP54PS/v2s6/U7KbO9++vAlj06NVfP6WoCX6FdSbulXYqr3uSfjUTeZ1",
+	"bfYuHGxcFUWPaHvPx7a0xcQjGroy792XTkHnzWLxbKVerTItX/GZ+16WxJiqs1eLRR/ditF5o+zUdPlh",
+	"uEtdiWl6vBruUZUm6g7XI4aoSgmba98Ap7nqP3/ZfdEN/CBNTMHDnGCabg/B9BfdwFZH/AenJ+K0USTj",
+	"QamRdOBMmFXPvzdgtX2f50Wa9uJT5zV0QHsfmb5S9zKPMKIqfUzi8qxQ2cvaeACj2wQuKWJ2WpVAoF2M",
+	"IKGb5OoJKxBBhsXDpeBzhHKlcU9yLr3alYnTrivF/4mT7TOLuE4Z7Xa7LjZ2Z9dwI7Xj07DiumrbZl6M",
+	"9wOPILaBLFYZVQpIUKaPLmghpi34EL26uRnu0K4Bn4Ckm86+tjH208Drqg7v9e1uexWhJ2xx5zQHe3z6",
+	"wGI9ZwJCR3+Dli8cWFE4lFyP0UfjdYCzmoKuAi3DpR5XurC630TYMmQ71XfmnGEqsU9WY5+1ycoS77ne",
+	"Kq50EeVUJXZKxS9sdbzV2x4wOfSUNeQxz5zBsc99QPMFEKe/403QBfB4hN16PWYq7WdOToC9C3pdNfO5",
+	"fVarU7j0r+iXtx67Oqvp7Kvy8oDeNQ1KHQSUGaw7ewAkIDqMILTH9fJ8qiFEzb9XD1ft5rrgsN+s3j3Q",
+	"vC2382KsfnHrglDw7qG2DjPI20iYHXuY+p/hHtXLUieouryveqX5lnN3/WEo+AStWzsv1PNp3fbui+2A",
+	"UVgYcBHomGrwlAALGGcQUBlYacwuu/g6GvluH6bbHdJJUxs/bc37aWdccu4ZvRdnqg/p+j2ziq5jwLOL",
+	"RDmeHQbz3JYyHDr7mgbPtULH4+Gs+vUUcPi2YdvMmeHm+0XuF0qAKbqmIF66YW4+69G37v9etrmIG1e9",
+	"BznanZvSo3wH9IUEXJsZQA/Q3OcgoVJxsX35Ll0Jp/n36pXNnU3Hlc/btNH1i/ndTfO8+KqfBfVo9NV+",
+	"zrCUvWWdzC4Vrn7mlR8OLevz7+QHJf/sa6lvX3aAfHFbc4jywnfCwY//nHXx/HHslmIuF0k6gAcXtqbs",
+	"qrxLWcLjkomsSQv9jImsMUZ8Xt407fcIf3Yt/oPaM6H2jeIZjXGaboPq3u+/N26zgzGEdzaXeiZFNR4U",
+	"PPyccB2ADlacK6kEzgPKbCq3jt1MjjFPEdT4TPWnm3G56tZl7BMeme+h7goHPe/xL8KJWfDwtCf/h97D",
+	"OX+W3ZaQehNq9vbZFRcE9IZWXz1zWfeXc2KoavUtpAqRunt7cjnXKJ1hQUHOFM1IkfF0FvNM19v//wA9",
+	"EM0+BGQAAA==",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

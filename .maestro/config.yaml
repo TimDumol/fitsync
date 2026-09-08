@@ -1,0 +1,11 @@
+flows:
+  - "flows/*.yaml"
+executionOrder:
+  continueOnFailure: false
+  flowsOrder:
+    - Garmin fixture import
+    - Review and skip a planned session
+    - Record and finish a planned workout
+    - Browse workout history and summary
+    - Authentication gate and tab navigation
+testOutputDir: /tmp/fitsync-maestro

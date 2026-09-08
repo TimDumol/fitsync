@@ -38,6 +38,15 @@ export interface PlannedStep {
   notes?: string | null;
 }
 
+export interface PlannedStepGroup {
+  group_id: UUID;
+  label?: string;
+  mode: 'rounds';
+  rounds: number;
+  step_sequence_nos: number[];
+  notes?: string | null;
+}
+
 export interface PlannedSession {
   session_id: UUID;
   plan_id: UUID;
@@ -54,6 +63,7 @@ export interface PlannedSession {
   completed_activity_id?: string | null;
   completed_workout_id?: UUID | null;
   steps: PlannedStep[];
+  groups?: PlannedStepGroup[];
 }
 
 export interface TrainingPlan {
@@ -90,8 +100,15 @@ export interface WorkoutEntry {
   rir?: number | null;
   rir_min?: number | null;
   rir_max?: number | null;
-  laterality?: string | null;
+  laterality?: 'bilateral' | 'unilateral' | 'left' | 'right' | 'alternating' | 'unknown' | null;
+  reps_per_side?: boolean;
+  load_basis?: 'total_external' | 'per_limb' | 'bodyweight_added' | 'assistance' | 'unknown' | null;
+  load_per_limb_kg?: number | null;
+  total_external_load_kg?: number | null;
+  added_load_kg?: number | null;
   muscle_groups?: string[];
+  direct_muscle_groups?: string[];
+  indirect_muscle_groups?: string[];
   notes?: string | null;
   is_warmup?: boolean;
 }
@@ -133,6 +150,12 @@ export interface MeResponse {
   athlete: { athlete_id: UUID; handle: string; timezone: string; units?: 'metric' };
   accessible_athletes: Array<{ athlete_id: UUID; handle: string; timezone: string; units?: 'metric' }>;
   capabilities: { plans?: boolean; workouts?: boolean; sync?: boolean };
+}
+
+export interface GarminSyncStatus {
+  last_ingested_at: string | null;
+  latest_record_date: string | null;
+  datasets: Record<string, string>;
 }
 
 export interface SyncChange {

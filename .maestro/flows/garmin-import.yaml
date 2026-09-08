@@ -1,0 +1,45 @@
+appId: com.fitsync.mobile
+name: Garmin fixture import
+tags:
+  - garmin
+---
+- launchApp
+- tapOn: Settings
+- scrollUntilVisible:
+    element:
+      id: garmin-import
+    direction: DOWN
+- assertVisible: Garmin import
+- tapOn:
+    id: garmin-email
+- inputText: mfa
+- hideKeyboard
+- tapOn:
+    id: garmin-password
+- inputText: fixturepassword
+- hideKeyboard
+- tapOn:
+    id: connect-garmin-button
+- assertVisible: Verify Garmin
+- tapOn:
+    id: garmin-mfa-code
+- inputText: "123456"
+- hideKeyboard
+- tapOn:
+    id: verify-garmin-button
+- assertVisible:
+    id: garmin-connected
+- scrollUntilVisible:
+    element:
+      id: sync-garmin-button
+    direction: DOWN
+- tapOn:
+    id: sync-garmin-button
+- assertVisible:
+    id: garmin-result
+- tapOn:
+    id: disconnect-garmin-button
+- assertVisible: Disconnect Garmin?
+- tapOn: Disconnect
+- assertNotVisible:
+    id: garmin-connected

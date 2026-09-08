@@ -14,16 +14,14 @@ The deployment consists of Caddy, Pocket ID v2, and Fitnessd under Docker Compos
 * There is one household and exactly two athletes: `tim` and `jopi`.
 * Both approved users may read and write either athlete's data.
 * Garmin payloads are stored raw, including GPS coordinates and detailed metrics.
-* Existing `data/neon_dump/fitness/*` data belongs to `tim` and must be migrated.
 * Keep the simple millisecond timestamp sync cursor. This is acceptable while there is only one mobile device per athlete and workout concurrency remains negligible.
 
 ## Execution rules
 
 Follow the numbered steps in order. Do not begin the next step until every check for the current step passes.
 
-* Never read, print, commit, or log the contents of `.neon-connect-string`, Garmin tokens, Pocket ID encryption keys, ingest tokens, OAuth tokens, or database credentials.
-* Use committed fixtures with synthetic data in tests. Do not copy personal payloads from `data/neon_dump/` into test fixtures.
-* Keep `data/neon_dump/` unchanged until migration, restore, and count/hash checks pass.
+* Never read, print, commit, or log Garmin tokens, Pocket ID encryption keys, ingest tokens, OAuth tokens, or database credentials.
+* Use committed fixtures with synthetic data in tests.
 * Run `go test ./...` after every Go step and the existing Python tests after every Python change.
 * Pin all Go modules. Before production, pin container images to tested exact versions or digests rather than floating tags.
 * If a check fails, fix it before continuing. Do not weaken a test or skip a security validation merely to advance the plan.
@@ -52,25 +50,13 @@ Use `net/http` and `log/slog`, [modernc.org/sqlite](https://pkg.go.dev/modernc.o
 ## Step 1 — Establish and record the baseline
 
 1. Run the existing Python tests without changing application behavior.
-2. Read `data/neon_dump/manifest.json` and inspect only table names, row counts, column names, dataset names, and payload keys. Do not print identity or health values.
-3. Record the expected migration inventory in a synthetic test or test constants:
-   * Garmin records: 205 total.
-   * `activities`: 34.
-   * `activity_details`: 34.
-   * `body_battery_events`: 39.
-   * `body_measurements`: 10.
-   * `daily_recovery`: 39.
-   * `sleep`: 39.
-   * `training_snapshot`: 10.
-   * Workout sessions: 1.
-   * Workout entries: 16.
-4. Ensure `.gitignore` covers `.neon-connect-string`, `data/neon_dump/`, `.private/`, `secrets/`, generated databases, database WAL/SHM files, and archive storage.
+2. Ensure `.gitignore` covers `.private/`, `secrets/`, generated databases, database WAL/SHM files, and archive storage.
 
 **Check before continuing**
 
 ```bash
 env UV_CACHE_DIR=/tmp/fitsync-uv-cache uv run python -m unittest -v
-git check-ignore .neon-connect-string data/neon_dump/ secrets/
+git check-ignore secrets/
 git status --short
 ```
 
@@ -82,14 +68,13 @@ Expected: all existing Python tests pass; each sensitive path is ignored; no sen
 2. Create `cmd/fitnessd/main.go` with subcommands prepared for:
    * `serve`
    * `migrate`
-   * `import-neon-dump`
    * `identities list-pending`
    * `identities approve`
    * `identities disable`
    * `healthcheck`
 3. Add configuration parsing in `internal/config`. Configuration must support `*_FILE` secrets and must never log secret values.
 4. Add an HTTP server with explicit read-header, read-body, write, and idle timeouts, graceful shutdown, structured logs, request IDs, and `GET /healthz`.
-5. Add a multi-stage Dockerfile that builds a static application binary and runs it as a non-root user. Include CA certificates; do not put secrets in the image. Add `.dockerignore` entries for `.git`, `.private`, `.neon-connect-string`, `data/`, `secrets/`, SQLite files, and Python caches.
+5. Add a multi-stage Dockerfile that builds a static application binary and runs it as a non-root user. Include CA certificates; do not put secrets in the image. Add `.dockerignore` entries for `.git`, `.private`, `data/`, `secrets/`, SQLite files, and Python caches.
 
 **Check before continuing**
 
@@ -138,7 +123,7 @@ Expected: build and tests pass; `fitnessd serve` starts; `/healthz` returns 200;
 
    Add fixture tests for every JSON path before indexing it.
 6. Create `garmin_archives` with athlete/activity association, safe generated path, original filename for display only, size, SHA-256, content type, creation time, and expiry time.
-7. Create `workout_sessions`, `workout_entries`, and `app_documents`. Use text IDs so new rows can use UUIDv7 while legacy IDs can be retained as strings. Include `athlete_id`, `client_updated_at`, server-generated `server_synced_at`, and `deleted_at`. Add foreign keys and ordering constraints.
+7. Create `workout_sessions`, `workout_entries`, and `app_documents`. Use text IDs with UUIDv7 required for all new syncable rows. Include `athlete_id`, `client_updated_at`, server-generated `server_synced_at`, and `deleted_at`. Add foreign keys and ordering constraints.
 8. Store all application timestamps as Unix milliseconds. Do not pretend SQLite text timestamps are timezone-aware.
 9. Keep ingest-token mappings in configuration memory: at startup read each per-athlete token file, hash it, retain only the hash, and discard the plaintext bytes. No ingest token or hash belongs in logs.
 
@@ -153,35 +138,7 @@ sqlite3 /tmp/fitsync-plan.db 'PRAGMA foreign_key_check; PRAGMA integrity_check; 
 
 Expected: migrations are idempotent; foreign-key check emits no rows; integrity is `ok`; journal mode is `wal`; tests prove invalid JSON, invalid offsets, duplicate identities, and cross-table orphan rows are rejected.
 
-## Step 4 — Build and verify the Neon dump importer
-
-1. Implement `fitnessd import-neon-dump --dir <path> --athlete tim [--dry-run]`.
-2. Read only:
-   * `fitness/records.json`
-   * `fitness/workout_sessions.json`
-   * `fitness/workout_entries.json`
-3. Never import `neon_auth/*`. Pocket ID is the new identity authority. Ignore the empty `public/fitsync_items.json` table.
-4. Import Garmin rows as `legacy_curated_v1`. Preserve dataset, record key, payload, hash, record date, and available sync timestamps.
-5. Assign every imported fitness row to `tim`. Keep `tim` inactive until identity approval; inactive status must not prevent an administrative import.
-6. Convert legacy numeric entry IDs to their exact decimal string representation. Preserve existing workout IDs and entry ordering.
-7. For `activity_details` without a date, derive it from the matching `activities` record. Reject unmatched or duplicate records instead of guessing.
-8. Make the entire import transactional and idempotent. A failed import must leave the target database unchanged. A repeated successful import must not duplicate data.
-9. Dry-run output must contain counts and errors only, never payloads or health values.
-
-**Check before continuing**
-
-```bash
-find data/neon_dump -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/fitsync-neon-before.sha256
-go run ./cmd/fitnessd import-neon-dump --db /tmp/fitsync-import.db --dir data/neon_dump --athlete tim --dry-run
-go run ./cmd/fitnessd import-neon-dump --db /tmp/fitsync-import.db --dir data/neon_dump --athlete tim
-go run ./cmd/fitnessd import-neon-dump --db /tmp/fitsync-import.db --dir data/neon_dump --athlete tim
-sha256sum --check /tmp/fitsync-neon-before.sha256
-sqlite3 /tmp/fitsync-import.db 'PRAGMA foreign_key_check; PRAGMA integrity_check;'
-```
-
-Expected: dry run reports the inventory from Step 1; both real runs end with exactly 205 Garmin records, one session, and 16 entries; no records are assigned to `jopi`; integrity checks pass; source files remain byte-for-byte unchanged.
-
-## Step 5 — Define OpenAPI and implement REST/LWW sync
+## Step 4 — Define OpenAPI and implement REST/LWW sync
 
 1. Write `api/openapi.yaml` before handlers. Generate Go request/response types and server interfaces into `internal/httpapi/generated.go` with `oapi-codegen`; do not hand-maintain duplicate transport structs.
 2. Define bounded, paginated read endpoints:
@@ -196,7 +153,7 @@ Expected: dry run reports the inventory from Step 1; both real runs end with exa
 7. Apply a session and its entry mutations in one database transaction. Define deletion tombstones explicitly and never hard-delete syncable rows during normal operation.
 8. Document the accepted limitation: this timestamp cursor assumes one mobile device per athlete and negligible concurrent workout writes. Garmin ingestion uses separate tables. Replace it with a sequence cursor if those assumptions change.
 9. Enforce request-body, batch-size, range, and page-size limits in both the OpenAPI contract and handlers.
-10. Keep authorization behind an injected interface and use a fake household principal in tests. Do not expose these handlers outside localhost/test servers until the real authorization middleware in Step 7 is complete.
+10. Keep authorization behind an injected interface and use a fake household principal in tests. Do not expose these handlers outside localhost/test servers until the real authorization middleware in Step 6 is complete.
 
 **Check before continuing**
 
@@ -210,7 +167,7 @@ go test ./...
 
 Expected: generated code is current; contract tests cover create/update/equal-time/stale/delete/pull behavior, transaction rollback, pagination boundaries, invalid UUIDs, and oversized batches.
 
-## Step 6 — Implement raw Garmin ingestion and archive retention
+## Step 5 — Implement raw Garmin ingestion and archive retention
 
 1. Replace the single shared ingest token with one random token per athlete. At startup, hash each configured token and compare request credentials in constant time; retain only hashes in memory. Map each credential to exactly one athlete. Configure token files as `FITNESS_INGEST_TIM_TOKEN_FILE` and `FITNESS_INGEST_JOPI_TOKEN_FILE`; do not accept an athlete ID from an untrusted body as authority.
 2. Implement `POST /api/v1/ingest/garmin/batch` as `multipart/form-data`:
@@ -238,9 +195,9 @@ env UV_CACHE_DIR=/tmp/fitsync-uv-cache uv run python -m unittest -v
 
 Expected: synthetic integration tests prove token-to-athlete binding, raw GPS preservation, no-op duplicate uploads, Garmin revision replacement, path-traversal rejection, size enforcement, atomic rollback, startup cleanup, and 90-day expiry. Existing Python tests still pass.
 
-## Step 7 — Implement Pocket ID identity binding and API authorization
+## Step 6 — Implement Pocket ID identity binding and API authorization
 
-1. At startup, fetch Pocket ID discovery from the configured exact issuer. Use the advertised `jwks_uri`; do not hard-code a JWKS path. Unit/integration tests at this stage must use a local `httptest` OIDC issuer; they must not depend on the production Pocket ID deployment from Step 10.
+1. At startup, fetch Pocket ID discovery from the configured exact issuer. Use the advertised `jwks_uri`; do not hard-code a JWKS path. Unit/integration tests at this stage must use a local `httptest` OIDC issuer; they must not depend on the production Pocket ID deployment from Step 9.
 2. Cache JWKS with `keyfunc`, refresh periodically, and refresh when an unknown `kid` appears.
 3. Accept OAuth access tokens only. Validate:
    * allowed signing algorithm;
@@ -268,7 +225,7 @@ go test ./...
 
 Expected: tests reject wrong issuer, audience, algorithm, scope, expired token, future token, ID token, unknown identity, inactive identity, and athlete outside the household. Tests prove `tim` and `jopi` can each access both household athletes only after explicit approval.
 
-## Step 8 — Implement MCP and OAuth protected-resource behavior
+## Step 7 — Implement MCP and OAuth protected-resource behavior
 
 1. Pin a tested official MCP Go SDK version.
 2. Serve protected resource metadata at `/.well-known/oauth-protected-resource`. It must identify:
@@ -293,10 +250,10 @@ go test ./...
 
 Expected: protocol tests pass for initialization/tool discovery/tool calls, unauthorized requests produce the required HTTP challenge, read/write scopes are separated, cancellation stops a synthetic long-running handler, tool outputs remain bounded, and cross-household fixture access fails.
 
-## Step 9 — Create the production Compose and Caddy configuration
+## Step 8 — Create the production Compose and Caddy configuration
 
 The repository-level Compose file in this step is also a self-contained
-integration/standalone configuration. On `aries.timdumol.com`, Step 10 renders
+integration/standalone configuration. On `aries.timdumol.com`, Step 9 renders
 the production variant without its `caddy` service and installs the site blocks
 as a fragment in the host's existing Caddy deployment. The backend service
 definitions, secrets, health checks, and routing behavior remain the same.
@@ -356,7 +313,6 @@ definitions, secrets, health checks, and routing behavior remain the same.
        volumes:
          - ./data/fitnessd:/data
          - ./data/archives:/var/lib/fitnessd/archives
-         - ./data/neon_dump:/import/neon_dump:ro
        environment:
          DB_PATH: /data/fitness.db
          ARCHIVE_DIR: /var/lib/fitnessd/archives
@@ -434,7 +390,7 @@ curl --fail https://api.aries.timdumol.com/.well-known/oauth-protected-resource
 
 Expected: Compose validates; all health checks pass; TLS is valid; discovery documents contain the configured public HTTPS URLs; host ports 1411 and 3000 are not listening publicly; an unauthenticated `/mcp` request returns the OAuth `401` challenge.
 
-## Step 10 — Provision and deploy with Ansible
+## Step 9 — Provision and deploy with Ansible
 
 1. Add a `deploy/ansible/` playbook and inventory for `aries.timdumol.com`. The
    playbook must connect as the passwordless-SSH deployment user and use
@@ -467,11 +423,11 @@ Expected: Compose validates; all health checks pass; TLS is valid; discovery doc
    `import` directive; an empty glob is valid.
 5. Copy a deliberate allowlist of source/build/deployment files into
    `/opt/fitsync/app`; do not synchronize the whole working tree. In
-   particular, never upload `.git`, `.private`, `.neon-connect-string`, local
+   particular, never upload `.git`, `.private`, local
    databases, Garmin data, Python caches, editor settings, or plaintext
    secrets.
-6. Create persistent directories for Fitnessd, Pocket ID, archives, and the
-   read-only Neon import under `/opt/fitsync`. Set ownership to the numeric
+6. Create persistent directories for Fitnessd, Pocket ID, and archives under
+   `/opt/fitsync`. Set ownership to the numeric
    non-root users used by the pinned images. The playbook must preserve
    existing databases, keys, archives, and imported data on every rerun.
 7. Generate the Pocket ID encryption key and both athlete ingest tokens on the
@@ -498,8 +454,8 @@ Expected: Compose validates; all health checks pass; TLS is valid; discovery doc
     combined configuration. An initial failed deployment must remove its new
     fragment so `mars.timdumol.com` remains served.
 11. Keep interactive Pocket ID setup, user/passkey enrollment, subject sync,
-    and the production Neon import out of the unattended playbook. Print the
-    exact non-secret operator commands needed for Step 11 after a successful
+    out of the unattended playbook. Print the exact non-secret operator commands
+    needed for Step 10 after a successful
     deployment, without transferring or printing the API key.
 12. Add a repository entrypoint such as `scripts/deploy.sh` that runs
     `ansible-playbook` with the committed inventory, supports `--check`, and
@@ -525,7 +481,7 @@ healthy throughout; exactly one Caddy container publishes 80/443; Fitnessd and
 Pocket ID have no host-published ports; all three public hosts have valid TLS;
 and no secret value appears in Ansible, Docker Compose, or service logs.
 
-## Step 11 — Provision Pocket ID and bind `tim` and `jopi`
+## Step 10 — Provision Pocket ID and bind `tim` and `jopi`
 
 1. Complete Pocket ID's initial setup at the HTTPS URL.
 2. Create exactly two users: `tim` and `jopi`. Make `tim` the administrator rather than creating a shared third admin account.
@@ -535,21 +491,17 @@ and no secret value appears in Ansible, Docker Compose, or service logs.
 6. Verify `fitnessd identities list` shows exactly two active `(issuer, sub)` bindings and `identities list-pending` is empty. The bind operation is transactional and idempotent; rerun the sync script after a failed or interrupted attempt.
 7. Connect ChatGPT as `tim` and `jopi`. No pending auth request or approval script is needed. Pending identities remain a diagnostic fallback for an unexpected subject; do not approve one during normal setup without investigating why the sync did not match.
 8. Do not manually copy a username into an authorization table and do not treat username as a stable identity. The bound `(issuer, sub)` is authoritative.
-9. Import the Neon snapshot into the production Fitnessd database, first with `--dry-run` and then for real. Run the real import twice to demonstrate idempotency before allowing raw Garmin sync.
 
 **Check before continuing**
 
 ```bash
 docker compose exec fitnessd fitnessd identities list
 docker compose exec fitnessd fitnessd identities list-pending
-docker compose exec fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim --dry-run
-docker compose exec fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim
-docker compose exec fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim
 ```
 
-Expected: exactly two active athletes and two distinct approved `(issuer, sub)` bindings exist; no pending identities remain; neither binding can be approved a second time or rebound without an explicit administrative rotation command. Production contains exactly 205 imported Garmin records, one workout session, and 16 entries, all assigned to `tim`.
+Expected: exactly two active athletes and two distinct approved `(issuer, sub)` bindings exist; no pending identities remain; neither binding can be approved a second time or rebound without an explicit administrative rotation command.
 
-## Step 12 — Run end-to-end acceptance tests
+## Step 11 — Run end-to-end acceptance tests
 
 1. Connect ChatGPT Web to `https://api.aries.timdumol.com/mcp`.
 2. Test the complete OAuth path: protected-resource discovery, Pocket ID discovery, login, consent, token issuance, token refresh, and reconnect after expiry.
@@ -570,7 +522,7 @@ docker compose logs --since=30m fitnessd pocketid caddy
 
 Expected: all automated and manual scenarios pass; logs contain request IDs and useful errors but no tokens, raw payloads, health values, credentials, or secret material; no duplicate Garmin/workout records appear.
 
-## Step 13 — Back up, restore-test, and cut over
+## Step 12 — Back up, restore-test, and cut over
 
 1. Create `scripts/backup_fitness.sh` and `scripts/restore_test.sh`. Use SQLite's online `.backup` command for both active databases; never copy only a WAL-mode main database file.
 2. Back up:
@@ -582,7 +534,7 @@ Expected: all automated and manual scenarios pass; logs contain request IDs and 
 3. Use `mktemp`-derived snapshot names, `set -euo pipefail`, restrictive `umask`, and a cleanup trap so overlapping backup jobs cannot collide or leave plaintext snapshots on the server.
 4. Encrypt off-host backups, define local retention, verify hashes after transfer, and alert on failure.
 5. Restore into a temporary isolated Compose project. Confirm both databases pass integrity checks, Pocket ID can decrypt its signing material, both users can authenticate, and Fitnessd row counts match production.
-6. Only after a successful restore test, point normal Garmin sync at Fitnessd and stop Neon uploads. Keep the Neon dump read-only through at least one successful backup cycle.
+6. Only after a successful restore test, point normal Garmin sync at Fitnessd.
 
 **Final check**
 

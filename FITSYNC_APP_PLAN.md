@@ -599,7 +599,11 @@ Input:
 ```
 
 Each session contains its ordered steps using the canonical contracts above.
-The server sets `source=mcp`. This is an idempotent, non-destructive write tool.
+The server sets `source=mcp`. New `plan_id`, `session_id`, and `step_id` values
+may be omitted; the server generates UUIDv7 primary IDs. Each of those records
+may also carry an `idempotency_key`, a caller-owned secondary unique key for
+retrying the same write without asking the caller to create a UUIDv7.
+This is an idempotent, non-destructive write tool.
 
 Return the stored plan aggregate, counts of sessions and steps, and `sync_seq`.
 Do not return only an acknowledgement; ChatGPT must be able to verify what was
@@ -848,7 +852,8 @@ local state and foreground retry.
 - Never trust athlete ID, planned-session ownership, or planned-step ownership
   solely because it appears in a request body.
 - Require UUIDv7 for all newly created plan, session, step, workout, and entry
-  IDs.
+  primary IDs; MCP generates them when callers omit them and accepts separate
+  caller-owned idempotency keys for retries.
 - Validate dates as real calendar dates and timestamps as RFC 3339 with offsets.
 - Enforce JSON array, string, request-body, date-range, and pagination bounds.
 - Return normalized data through REST and MCP; never return raw Garmin payloads,

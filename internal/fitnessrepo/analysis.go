@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/timdumol/fitsync/internal/fitnessanalysis"
 	"github.com/timdumol/fitsync/internal/fitnessdata"
 )
 
@@ -49,14 +50,35 @@ func (r *Repository) TrainingContext(ctx context.Context, athleteID, asOf string
 	}
 
 	activities := Page[fitnessdata.ActivitySummary]{}
+	var manualStrength []StrengthWorkout
 	if wantLoad || wantActivities {
 		activityFrom := start
 		if wantLoad {
 			activityFrom = dateShift(asOf, -maxInt(lookback, 28))
 		}
-		activities, err = r.Activities(ctx, athleteID, ActivityQuery{From: activityFrom, To: asOf, Detail: "compact", Order: "desc", Limit: 100})
+		// Summary is the analysis projection. Compact presentation data clears
+		// the very effects/zones needed to classify hard sessions.
+		activities, err = r.Activities(ctx, athleteID, ActivityQuery{From: activityFrom, To: asOf, Detail: "summary", Order: "desc", Limit: 100})
 		if err != nil {
 			return TrainingContext{}, err
+		}
+		if wantLoad {
+			// Manual perceived effort is an analysis input. Join it onto the
+			// internal summary projection before any presentation projection is
+			// applied, while keeping the Garmin activity as the counted session.
+			manual, manualErr := r.StrengthWorkouts(ctx, athleteID, StrengthQuery{From: activityFrom, To: asOf, IncludeEntries: false, Order: "asc", Limit: 100})
+			if manualErr == nil {
+				manualStrength = manual.Items
+				for index := range activities.Items {
+					for _, workout := range manual.Items {
+						if workout.LinkedActivityID == nil || *workout.LinkedActivityID != activities.Items[index].ActivityID {
+							continue
+						}
+						activities.Items[index].PerceivedEffort = workout.PerceivedEffort
+						activities.Items[index].LinkedWorkoutID = &workout.WorkoutID
+					}
+				}
+			}
 		}
 	}
 
@@ -95,7 +117,13 @@ func (r *Repository) TrainingContext(ctx context.Context, athleteID, asOf string
 	}
 	if wantLoad {
 		loadActivities := activitiesInRange(activities.Items, dateShift(asOf, -28), asOf)
-		context.CurrentStatus.TrainingLoad = calculateLoad(loadActivities, asOf, health.Items)
+		var planned []PlannedSession
+		if wantPlan {
+			planned = plan.Sessions
+		}
+		context.CurrentStatus.TrainingLoad = calculateLoadWithPlans(loadActivities, asOf, health.Items, planned, manualStrength)
+		strengthContext := aggregateStrengthForContext(ctx, r, athleteID, dateShift(asOf, -28), asOf)
+		context.CurrentStatus.TrainingLoad.StrengthContext = StrengthContext{Sessions: strengthContext.Sessions, WorkingSets: strengthContext.WorkingSets, HighEffortSets: strengthContext.HighEffortSets, Method: "structured_strength_summary_v1"}
 	}
 	if wantActivities {
 		context.RecentActivities = limitActivities(recentActivities, 10)
@@ -225,8 +253,13 @@ func contextGoalsProfile(profile Profile) Profile {
 }
 
 func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *RecoveryStatus {
+	method := RecoveryMethod{Name: "rule_based_recovery_v2", Version: 2, Evaluations: []RecoveryEvaluation{}, UnavailableRules: []string{}}
+	empty := func() *RecoveryStatus {
+		return &RecoveryStatus{Classification: "unknown", Confidence: "unavailable", Sleep: RecoverySleepEvidence{SourceStatus: "unavailable"}, HRV: RecoverySignalEvidence{SourceStatus: "unavailable"}, RestingHeartRateSignal: RecoverySignalEvidence{SourceStatus: "unavailable"}, Method: method}
+	}
 	if len(items) == 0 {
-		return &RecoveryStatus{Classification: "unknown", Confidence: "unavailable", Method: RecoveryMethod{Name: "rule_based_recovery_v1"}}
+		method.UnavailableRules = []string{"sleep_score_low", "sleep_duration_low", "hrv_suppressed", "rhr_elevated", "body_battery_low"}
+		return empty()
 	}
 	var current *DailyHealthItem
 	for i := range items {
@@ -236,26 +269,46 @@ func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *R
 		}
 	}
 	if current == nil {
-		return &RecoveryStatus{Classification: "unknown", Confidence: "unavailable", Method: RecoveryMethod{Name: "rule_based_recovery_v1"}}
+		method.UnavailableRules = []string{"sleep_score_low", "sleep_duration_low", "hrv_suppressed", "rhr_elevated", "body_battery_low"}
+		return empty()
 	}
-	result := &RecoveryStatus{Classification: "normal", Confidence: "unavailable", Method: RecoveryMethod{Name: "rule_based_recovery_v1"}}
+	result := &RecoveryStatus{Classification: "normal", Confidence: "unavailable", Sleep: RecoverySleepEvidence{SourceStatus: "unavailable"}, HRV: RecoverySignalEvidence{SourceStatus: "unavailable"}, RestingHeartRateSignal: RecoverySignalEvidence{SourceStatus: "unavailable"}, Method: method}
 	objective := 0
 	negative := []string{}
+	addEvaluation := func(rule string, value any, operator string, threshold any, matched bool) {
+		result.Method.Evaluations = append(result.Method.Evaluations, RecoveryEvaluation{Rule: rule, Value: value, Operator: operator, Threshold: threshold, Matched: matched})
+		if matched {
+			negative = append(negative, rule)
+		}
+	}
+	addUnavailable := func(rule string) { result.Method.UnavailableRules = append(result.Method.UnavailableRules, rule) }
 	if current.Sleep != nil {
 		result.SleepScore = current.Sleep.Score
-		result.SleepHours = current.Sleep.TotalHours
+		totalSleep := current.Sleep.TotalSleep24H
+		if totalSleep == nil {
+			totalSleep = current.Sleep.TotalHours
+		}
+		result.SleepHours = totalSleep
+		result.Sleep = RecoverySleepEvidence{MainHours: current.Sleep.MainSleepHours, NapHours: current.Sleep.NapSleepHours, Total24H: totalSleep, Score: current.Sleep.Score, Available: current.Sleep.SignalStatus.Available, ObservedDate: current.Sleep.SignalStatus.ObservedDate, LastObservedDate: current.Sleep.SignalStatus.LastObservedDate, AgeDays: current.Sleep.SignalStatus.AgeDays, Stale: current.Sleep.SignalStatus.Stale, SourceStatus: current.Sleep.SignalStatus.SourceStatus}
+		if !result.Sleep.Available && (result.Sleep.MainHours != nil || result.Sleep.Score != nil) {
+			result.Sleep.Available = true
+			result.Sleep.ObservedDate = pointerToString(current.Date)
+		}
 		if current.Sleep.Score != nil {
 			objective++
-			if *current.Sleep.Score < 60 {
-				negative = append(negative, "sleep_score_low")
-			}
+			addEvaluation("sleep_score_low", *current.Sleep.Score, "<", 60.0, *current.Sleep.Score < 60)
+		} else {
+			addUnavailable("sleep_score_low")
 		}
-		if current.Sleep.TotalHours != nil {
+		if totalSleep != nil {
 			objective++
-			if *current.Sleep.TotalHours < 6 {
-				negative = append(negative, "sleep_duration_low")
-			}
+			addEvaluation("sleep_duration_low", *totalSleep, "<", 6.0, *totalSleep < 6)
+		} else {
+			addUnavailable("sleep_duration_low")
 		}
+	} else {
+		addUnavailable("sleep_score_low")
+		addUnavailable("sleep_duration_low")
 	}
 	if current.HRV != nil && current.HRV.OvernightAverage != nil {
 		result.OvernightHRV = current.HRV.OvernightAverage
@@ -269,11 +322,18 @@ func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *R
 			result.HRVBaseline = base
 			ratio := *result.OvernightHRV / *base
 			result.HRVRatio = &ratio
-			if ratio < .85 {
-				negative = append(negative, "hrv_suppressed")
-			}
+			addEvaluation("hrv_suppressed", ratio, "<", .85, ratio < .85)
+		} else {
+			addUnavailable("hrv_suppressed")
+		}
+		result.HRV = RecoverySignalEvidence{Value: current.HRV.OvernightAverage, Baseline: result.HRVBaseline, Ratio: result.HRVRatio, Available: current.HRV.SignalStatus.Available, ObservedDate: current.HRV.SignalStatus.ObservedDate, LastObservedDate: current.HRV.SignalStatus.LastObservedDate, AgeDays: current.HRV.SignalStatus.AgeDays, Stale: current.HRV.SignalStatus.Stale, SourceStatus: current.HRV.SignalStatus.SourceStatus}
+		if !result.HRV.Available {
+			result.HRV.Available = true
+			result.HRV.ObservedDate = pointerToString(current.Date)
 		}
 		objective++
+	} else {
+		addUnavailable("hrv_suppressed")
 	}
 	if current.HeartRate != nil && current.HeartRate.Resting != nil {
 		result.RestingHeartRate = current.HeartRate.Resting
@@ -287,35 +347,45 @@ func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *R
 			result.RHRBaseline = base
 			delta := *result.RestingHeartRate - *base
 			result.RHRDelta = &delta
-			if delta >= 7 {
-				negative = append(negative, "rhr_elevated")
-			}
+			addEvaluation("rhr_elevated", delta, ">=", 7.0, delta >= 7)
+		} else {
+			addUnavailable("rhr_elevated")
+		}
+		result.RestingHeartRateSignal = RecoverySignalEvidence{Value: current.HeartRate.Resting, Baseline: result.RHRBaseline, Delta: result.RHRDelta, Available: current.HeartRate.SignalStatus.Available, ObservedDate: current.HeartRate.SignalStatus.ObservedDate, LastObservedDate: current.HeartRate.SignalStatus.LastObservedDate, AgeDays: current.HeartRate.SignalStatus.AgeDays, Stale: current.HeartRate.SignalStatus.Stale, SourceStatus: current.HeartRate.SignalStatus.SourceStatus}
+		if !result.RestingHeartRateSignal.Available {
+			result.RestingHeartRateSignal.Available = true
+			result.RestingHeartRateSignal.ObservedDate = pointerToString(current.Date)
 		}
 		objective++
+	} else {
+		addUnavailable("rhr_elevated")
 	}
 	if current.BodyBattery != nil && current.BodyBattery.AtWake != nil {
 		result.BodyBatteryAtWake = current.BodyBattery.AtWake
 		objective++
-		if *result.BodyBatteryAtWake < 35 {
-			negative = append(negative, "body_battery_low")
-		}
+		addEvaluation("body_battery_low", *result.BodyBatteryAtWake, "<", 35.0, *result.BodyBatteryAtWake < 35)
+	} else {
+		addUnavailable("body_battery_low")
 	}
 	if checkin != nil {
 		result.SubjectiveFatigue = checkin.Fatigue
 		result.Soreness = checkin.Soreness
-		if checkin.Fatigue != nil && *checkin.Fatigue >= 4 {
-			negative = append(negative, "high_fatigue")
+		if checkin.Fatigue != nil {
+			objective++
+			addEvaluation("high_fatigue", *checkin.Fatigue, ">=", 4.0, *checkin.Fatigue >= 4)
 		}
 		if checkin.Illness.Present {
-			negative = append(negative, "illness_present")
+			addEvaluation("illness_present", true, "=", true, true)
 		}
 		for _, p := range checkin.Pain {
 			if p.Severity >= 3 {
-				negative = append(negative, "meaningful_pain")
+				addEvaluation("meaningful_pain", p.Severity, ">=", 3, true)
 				break
 			}
 		}
 	}
+	result.Method.InputsUsed = objective
+	result.Method.InputsAvailable = 5
 	result.Method.ValidPrimarySignals = objective
 	result.Method.NegativeSignals = negative
 	if objective < 2 && len(negative) == 0 {
@@ -332,11 +402,58 @@ func classifyRecovery(items []DailyHealthItem, checkin *Checkin, asOf string) *R
 	} else if objective == 1 && len(negative) > 0 {
 		result.Confidence = "low"
 	}
+	result.Method.Confidence = result.Confidence
 	return result
 }
 
 func calculateLoad(activities []fitnessdata.ActivitySummary, asOf string, health []DailyHealthItem) *TrainingLoadStatus {
-	result := &TrainingLoadStatus{Classification: "unavailable", Method: LoadMethod{Name: "garmin_activity_load_sum_v1"}}
+	return calculateLoadWithPlans(activities, asOf, health, nil)
+}
+
+func calculateLoadWithPlans(activities []fitnessdata.ActivitySummary, asOf string, health []DailyHealthItem, planned []PlannedSession, structured ...[]StrengthWorkout) *TrainingLoadStatus {
+	result := &TrainingLoadStatus{Classification: "unavailable", HardSessions: []HardSessionEvidence{}, DoubleSessionEvidence: []DoubleSessionDay{}, Method: LoadMethod{Name: "garmin_activity_load_sum_v2", Confidence: "unavailable"}}
+	// Activity records can be repeated when a source exposes both a summary
+	// and a detail projection. A stable activity ID is the de-duplication key.
+	unique := make([]fitnessdata.ActivitySummary, 0, len(activities))
+	seen := map[string]bool{}
+	for _, activity := range activities {
+		key := activity.ActivityID
+		if key == "" {
+			key = activity.RecordKey
+		}
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		unique = append(unique, activity)
+	}
+	activities = unique
+	linkedActivityIndex := map[string]int{}
+	for index, activity := range activities {
+		if activity.ActivityID != "" {
+			linkedActivityIndex[activity.ActivityID] = index
+		}
+	}
+	manual := []StrengthWorkout{}
+	if len(structured) > 0 {
+		manual = structured[0]
+	}
+	// Join linked manual effort onto the Garmin activity before classification.
+	// An unlinked manual workout remains its own evidence item below.
+	for _, workout := range manual {
+		if workout.LinkedActivityID == nil || workout.PerceivedEffort == nil {
+			continue
+		}
+		if index, ok := linkedActivityIndex[*workout.LinkedActivityID]; ok {
+			activities[index].PerceivedEffort = workout.PerceivedEffort
+			if activities[index].LinkedWorkoutID == nil {
+				id := workout.WorkoutID
+				activities[index].LinkedWorkoutID = &id
+			}
+		}
+	}
 	for _, a := range activities {
 		result.Method.TotalActivities++
 		if a.TrainingLoad != nil {
@@ -345,21 +462,63 @@ func calculateLoad(activities []fitnessdata.ActivitySummary, asOf string, health
 	}
 	var last7, prev7, last28 float64
 	var has28, has7, hasPrev bool
+	var runningDistance [3]float64
+	var runningDuration [3]float64
+	var runningDistanceKnown [3]bool
+	var runningDurationKnown [3]bool
+	var runningLoad float64
+	runningLoadKnown := false
+	currentRunning, previousRunning := 0.0, 0.0
+	currentRunningKnown, previousRunningKnown := false, false
+	byDate := map[string][]fitnessdata.ActivitySummary{}
 	for _, a := range activities {
+		if a.DurationMinutes != nil && *a.DurationMinutes >= 20 {
+			byDate[a.Date] = append(byDate[a.Date], a)
+		}
 		if a.TrainingLoad == nil {
-			continue
+			// Distance and duration remain useful even when Garmin load is
+			// unavailable.
+		} else {
+			days := daysBetween(a.Date, asOf)
+			if days >= 0 && days < 7 {
+				last7 += *a.TrainingLoad
+				has7 = true
+			}
+			if days >= 7 && days < 14 {
+				prev7 += *a.TrainingLoad
+				hasPrev = true
+			}
+			if days >= 0 && days < 28 {
+				last28 += *a.TrainingLoad
+				has28 = true
+			}
+			if a.Category == "running" {
+				runningLoad += *a.TrainingLoad
+				runningLoadKnown = true
+			}
 		}
-		days := daysBetween(a.Date, asOf)
-		if days >= 0 && days < 7 {
-			last7 += *a.TrainingLoad
-			has7 = true
-		} else if days >= 7 && days < 14 {
-			prev7 += *a.TrainingLoad
-			hasPrev = true
-		}
-		if days >= 0 && days < 28 {
-			last28 += *a.TrainingLoad
-			has28 = true
+		if a.Category == "running" {
+			days := daysBetween(a.Date, asOf)
+			for index, window := range []int{7, 14, 28} {
+				if days >= 0 && days < window {
+					if a.DistanceKM != nil {
+						runningDistance[index] += *a.DistanceKM
+						runningDistanceKnown[index] = true
+					}
+					if a.DurationMinutes != nil {
+						runningDuration[index] += *a.DurationMinutes
+						runningDurationKnown[index] = true
+					}
+				}
+			}
+			if days >= 0 && days < 7 && a.DistanceKM != nil {
+				currentRunning += *a.DistanceKM
+				currentRunningKnown = true
+			}
+			if days >= 7 && days < 14 && a.DistanceKM != nil {
+				previousRunning += *a.DistanceKM
+				previousRunningKnown = true
+			}
 		}
 	}
 	if has7 {
@@ -384,25 +543,127 @@ func calculateLoad(activities []fitnessdata.ActivitySummary, asOf string, health
 			result.Classification = "elevated_vs_recent_range"
 		}
 	}
-	for _, a := range activities {
-		if daysBetween(a.Date, asOf) >= 0 && daysBetween(a.Date, asOf) < 7 && hardActivity(a) {
-			result.HardSessionsLast7Days++
+	plannedTypes := map[string]string{}
+	plannedWorkoutTypes := map[string]string{}
+	for _, session := range planned {
+		if session.CompletedActivityID != nil {
+			plannedTypes[*session.CompletedActivityID] = session.SessionType
+		}
+		if session.CompletedWorkoutID != nil {
+			plannedWorkoutTypes[*session.CompletedWorkoutID] = session.SessionType
 		}
 	}
+	for _, a := range activities {
+		if daysBetween(a.Date, asOf) < 0 || daysBetween(a.Date, asOf) >= 7 {
+			continue
+		}
+		plannedType := plannedTypes[a.ActivityID]
+		if plannedType == "" && a.LinkedWorkoutID != nil {
+			plannedType = plannedWorkoutTypes[*a.LinkedWorkoutID]
+		}
+		classification := fitnessanalysis.ClassifyHardActivity(a, plannedType)
+		evidence := HardSessionEvidence{ActivityID: a.ActivityID, Date: a.Date, Hard: classification.Hard, Method: classification.Method, Reasons: make([]HardSessionReason, 0, len(classification.Reasons))}
+		for _, reason := range classification.Reasons {
+			evidence.Reasons = append(evidence.Reasons, HardSessionReason{Rule: reason.Rule, Value: reason.Value, Threshold: reason.Threshold})
+		}
+		if evidence.Hard {
+			result.HardSessionsLast7Days++
+		}
+		if evidence.Hard {
+			result.HardSessions = append(result.HardSessions, evidence)
+		}
+	}
+	for _, workout := range manual {
+		if workout.LinkedActivityID != nil || workout.PerceivedEffort == nil || daysBetween(workout.Date, asOf) < 0 || daysBetween(workout.Date, asOf) >= 7 || *workout.PerceivedEffort < 8 {
+			continue
+		}
+		value := *workout.PerceivedEffort
+		result.HardSessionsLast7Days++
+		result.HardSessions = append(result.HardSessions, HardSessionEvidence{WorkoutID: workout.WorkoutID, Date: workout.Date, Hard: true, Method: "hard_session_v2", Reasons: []HardSessionReason{{Rule: "perceived_effort", Value: value, Threshold: 8}}})
+	}
 	result.ConsecutiveTrainingDays = consecutiveDays(activities, asOf)
+	for i := range runningDistance {
+		if runningDistanceKnown[i] {
+			value := runningDistance[i]
+			if i == 0 {
+				result.RunningDistance7Days = &value
+			}
+			if i == 1 {
+				result.RunningDistance14Days = &value
+			}
+			if i == 2 {
+				result.RunningDistance28Days = &value
+			}
+		}
+	}
+	for i := range runningDuration {
+		if runningDurationKnown[i] {
+			value := runningDuration[i]
+			if i == 0 {
+				result.RunningDuration7Days = &value
+			}
+			if i == 1 {
+				result.RunningDuration14Days = &value
+			}
+			if i == 2 {
+				result.RunningDuration28Days = &value
+			}
+		}
+	}
+	if currentRunningKnown && previousRunningKnown && previousRunning != 0 {
+		value := (currentRunning - previousRunning) / previousRunning * 100
+		result.RunningDistanceChangePercent = &value
+	}
+	if runningLoadKnown {
+		result.RunningGarminLoad = &runningLoad
+	}
+	if has7 {
+		value := last7
+		result.TotalGarminLoad = &value
+	}
+	for date, sessions := range byDate {
+		if len(sessions) < 2 {
+			continue
+		}
+		ids, categories := make([]string, 0, len(sessions)), make([]string, 0, len(sessions))
+		for _, session := range sessions {
+			ids = append(ids, session.ActivityID)
+			categories = append(categories, session.Category)
+		}
+		result.DoubleSessionEvidence = append(result.DoubleSessionEvidence, DoubleSessionDay{Date: date, SessionIDs: ids, Categories: categories})
+	}
+	sort.Slice(result.DoubleSessionEvidence, func(i, j int) bool {
+		return result.DoubleSessionEvidence[i].Date < result.DoubleSessionEvidence[j].Date
+	})
+	for _, day := range result.DoubleSessionEvidence {
+		distance := daysBetween(day.Date, asOf)
+		if distance >= 0 && distance < 7 {
+			result.DoubleSessionDays7++
+		}
+		if distance >= 0 && distance < 28 {
+			result.DoubleSessionDays28++
+		}
+	}
+	for distance := 0; distance < 90; distance++ {
+		if len(byDate[dateShift(asOf, -distance)]) == 0 {
+			result.DaysSinceRestDay = &distance
+			break
+		}
+	}
+	result.Method.InputsUsed = len(activities)
+	result.Method.InputsAvailable = result.Method.ActivitiesWithLoad
+	if result.Method.ActivitiesWithLoad > 0 {
+		result.Method.Confidence = "medium"
+	}
 	return result
 }
 
 func hardActivity(a fitnessdata.ActivitySummary) bool {
-	if a.PerceivedEffort != nil && *a.PerceivedEffort >= 8 {
-		return true
-	}
-	for _, effect := range []*float64{a.AerobicEffect, a.AnaerobicEffect} {
-		if effect != nil && *effect >= 3.5 {
-			return true
-		}
-	}
-	return a.SourceType == "intervals" || a.SourceType == "tempo" || a.SourceType == "threshold" || a.SourceType == "race"
+	return fitnessanalysis.ClassifyHardActivity(a, "").Hard
+}
+
+func pointerToString(value string) *string {
+	return &value
 }
 func consecutiveDays(activities []fitnessdata.ActivitySummary, asOf string) int {
 	days := map[string]bool{}

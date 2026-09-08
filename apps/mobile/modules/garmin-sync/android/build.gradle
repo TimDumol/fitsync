@@ -1,0 +1,22 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'com.fitsync.garmin'
+version = '1.0.0'
+
+android {
+  namespace 'com.fitsync.garmin'
+  compileSdkVersion project.hasProperty('compileSdkVersion') ? project.compileSdkVersion : 35
+
+  defaultConfig {
+    minSdkVersion project.hasProperty('minSdkVersion') ? project.minSdkVersion : 24
+  }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+}

@@ -2,11 +2,13 @@ import { ApiClient } from '../api/client';
 import { SyncPage, Workout } from '../api/generated';
 import { applyChanges, deleteDraft, saveDraft, saveWorkout, syncCursor } from '../db/repository';
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { singleFlight } from './coordinator';
 
-export type OutboxOperation = 'save' | 'complete';
+export type OutboxOperation = 'save' | 'complete' | 'delete';
 
 export async function enqueueWorkout(db: SQLiteDatabase, operation: OutboxOperation, workout: Workout): Promise<void> {
   if (operation === 'complete') await db.runAsync('DELETE FROM outbox WHERE aggregate_id=? AND operation=?', workout.workout_id, 'save');
+  if (operation === 'delete') await db.runAsync('DELETE FROM outbox WHERE aggregate_id=? AND operation IN (?,?)', workout.workout_id, 'save', 'complete');
   const update = await db.runAsync('UPDATE outbox SET request_json=?,retry_count=0,next_attempt_at=? WHERE aggregate_id=? AND operation=?', JSON.stringify(workout), Date.now(), workout.workout_id, operation);
   if (update.changes === 0) await db.runAsync('INSERT INTO outbox(athlete_id,operation,aggregate_id,request_json,retry_count,next_attempt_at) VALUES(?,?,?,?,0,?)', workout.athlete_id, operation, workout.workout_id, JSON.stringify(workout), Date.now());
 }
@@ -18,12 +20,21 @@ export async function flushOutbox(db: SQLiteDatabase, api: ApiClient, now = Date
   for (const item of items) {
     const workout = JSON.parse(item.request_json) as Workout;
     try {
-      const saved = item.operation === 'complete' ? await api.completeWorkout(workout) : await api.saveWorkout(workout);
-      await db.withTransactionAsync(async () => {
-        await saveWorkout(db, saved);
-        await deleteDraft(db, saved.workout_id);
-        await db.runAsync('DELETE FROM outbox WHERE id=?', item.id);
-      });
+      if (item.operation === 'delete') {
+        await api.deleteWorkout(workout);
+        await db.withTransactionAsync(async () => {
+          await db.runAsync('DELETE FROM cached_workouts WHERE workout_id=?', workout.workout_id);
+          await deleteDraft(db, workout.workout_id);
+          await db.runAsync('DELETE FROM outbox WHERE id=?', item.id);
+        });
+      } else {
+        const saved = item.operation === 'complete' ? await api.completeWorkout(workout) : await api.saveWorkout(workout);
+        await db.withTransactionAsync(async () => {
+          await saveWorkout(db, saved);
+          await deleteDraft(db, saved.workout_id);
+          await db.runAsync('DELETE FROM outbox WHERE id=?', item.id);
+        });
+      }
     } catch {
       const retryCount = item.retry_count + 1;
       const delay = Math.min(60 * 60 * 1000, 1_000 * 2 ** Math.min(retryCount, 10));
@@ -46,6 +57,17 @@ export async function pullChanges(db: SQLiteDatabase, api: ApiClient, athleteID:
   return last;
 }
 
-export async function syncNow(db: SQLiteDatabase, api: ApiClient, athleteID: string): Promise<void> { await flushOutbox(db, api); await pullChanges(db, api, athleteID); }
+async function performSync(db: SQLiteDatabase, api: ApiClient, athleteID: string): Promise<void> {
+  await flushOutbox(db, api);
+  await pullChanges(db, api, athleteID);
+}
+
+/**
+ * Tab screens all subscribe to sync state and can react to the same AppState
+ * event. Keep those callers from running overlapping SQLite transactions.
+ */
+export function syncNow(db: SQLiteDatabase, api: ApiClient, athleteID: string): Promise<void> {
+  return singleFlight(db, `sync:${athleteID}`, () => performSync(db, api, athleteID));
+}
 
 export async function persistLocalDraft(db: SQLiteDatabase, workout: Workout): Promise<void> { await db.withTransactionAsync(async () => { await saveDraft(db, workout); await enqueueWorkout(db, 'save', workout); }); }

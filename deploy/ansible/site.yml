@@ -188,7 +188,6 @@
         - {path: "{{ fitnessd_data_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}", mode: '0700'}
         - {path: "{{ pocketid_data_dir }}", owner: "{{ pocketid_uid }}", group: "{{ pocketid_gid }}", mode: '0700'}
         - {path: "{{ fitness_archive_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}", mode: '0700'}
-        - {path: "{{ fitness_neon_dump_dir }}", owner: root, group: "{{ fitnessd_gid }}", mode: '0750'}
         - {path: "{{ fitness_secret_dir }}", owner: root, group: root, mode: '0700'}
         - {path: "{{ fitness_rollback_dir }}", owner: root, group: root, mode: '0700'}
         - {path: "{{ aprendiendo_caddy_sites_dir }}", owner: root, group: root, mode: '0755'}
@@ -205,40 +204,6 @@
         - {path: "{{ fitnessd_data_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
         - {path: "{{ pocketid_data_dir }}", owner: "{{ pocketid_uid }}", group: "{{ pocketid_gid }}"}
         - {path: "{{ fitness_archive_dir }}", owner: "{{ fitnessd_uid }}", group: "{{ fitnessd_gid }}"}
-
-    - name: Find directories in the read-only Neon import
-      become: true
-      ansible.builtin.find:
-        paths: "{{ fitness_neon_dump_dir }}"
-        file_type: directory
-        recurse: true
-      register: neon_import_directories
-
-    - name: Keep Neon import directories root-owned and non-writable
-      become: true
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        owner: root
-        group: "{{ fitnessd_gid }}"
-        mode: '0750'
-      loop: "{{ neon_import_directories.files }}"
-
-    - name: Find files in the read-only Neon import
-      become: true
-      ansible.builtin.find:
-        paths: "{{ fitness_neon_dump_dir }}"
-        file_type: file
-        recurse: true
-      register: neon_import_files
-
-    - name: Keep Neon import files root-owned and readable by Fitnessd
-      become: true
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        owner: root
-        group: "{{ fitnessd_gid }}"
-        mode: '0640'
-      loop: "{{ neon_import_files.files }}"
 
     - name: Upload the deliberate Fitnessd build allowlist
       become: true
@@ -668,6 +633,23 @@
           delay: 5
           until: pocketid_discovery.status | default(0) == 200
 
+        - name: Run read-only MCP regression smoke against production data
+          become: true
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fitness_compose_file }}"
+              - exec
+              - -T
+              - fitnessd
+              - fitnessd
+              - mcp-smoke
+          args:
+            chdir: "{{ fitness_app_dir }}"
+          changed_when: false
+
         - name: Remove successful deployment staging files
           become: true
           ansible.builtin.file:
@@ -681,14 +663,9 @@
           ansible.builtin.debug:
             msg:
               - "Complete Pocket ID setup at https://{{ fitness_auth_domain }}"
-              - "rsync -a data/neon_dump/ timdumol@aries.timdumol.com:/tmp/fitsync-neon-dump/"
-              - "ssh aries.timdumol.com 'sudo install -d -m 0750 -o root -g 65532 /opt/fitsync/neon_dump && sudo cp -a /tmp/fitsync-neon-dump/. /opt/fitsync/neon_dump/ && sudo chown -R root:65532 /opt/fitsync/neon_dump && sudo find /opt/fitsync/neon_dump -type d -exec chmod 0750 {} + && sudo find /opt/fitsync/neon_dump -type f -exec chmod 0640 {} +'"
               - "POCKET_ID_API_KEY_FILE=.pocket-id-api-key ./scripts/sync-pocket-id-identities.sh"
               - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd identities list"
               - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd identities list-pending  # diagnostic fallback only"
-              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim --dry-run"
-              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim"
-              - "sudo docker compose --file {{ fitness_compose_file }} exec -T fitnessd fitnessd import-neon-dump --dir /import/neon_dump --athlete tim"
 
       rescue:
         - name: Restore the previous Compose file when one was promoted
