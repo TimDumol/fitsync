@@ -67,7 +67,7 @@ if (!fixtures) {
             System.getenv("FITSYNC_CHAQUOPY_PYTHON")?.let { buildPython(it) }
             pip {
                 options("--no-deps")
-                install("certifi"); install("charset-normalizer"); install("idna"); install("urllib3"); install("pycparser")
+                install("certifi"); install("charset-normalizer"); install("idna"); install("urllib3==2.8.0"); install("pycparser")
                 install("chaquopy-libffi"); install("cffi==1.17.1"); install("requests==2.34.2"); install("curl_cffi==0.15.0")
             }
         }

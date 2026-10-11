@@ -11,6 +11,7 @@ import contextlib
 import http.cookiejar
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -1121,8 +1122,20 @@ class Client:
         p = Path(path).expanduser()
         if p.is_dir() or not p.name.endswith(".json"):
             p = p / "garmin_tokens.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(self.dumps())
+        p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            p.parent.chmod(0o700)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(p, flags, 0o600)
+        # Tighten existing files before writing any credential material.
+        with os.fdopen(fd, "w", encoding="utf-8") as token_file:
+            if hasattr(os, "fchmod"):
+                os.fchmod(token_file.fileno(), 0o600)
+            token_file.write(self.dumps())
+        with contextlib.suppress(OSError):
+            p.chmod(0o600)
 
     def load(self, path: str) -> None:
         try:

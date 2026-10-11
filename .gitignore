@@ -25,6 +25,8 @@ __pycache__/
 *.key
 *.p12
 *.pfx
+*.jks
+*.keystore
 
 # Android app
 apps/android/dist/

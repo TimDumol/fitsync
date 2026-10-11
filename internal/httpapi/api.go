@@ -49,7 +49,7 @@ func (a *API) AuthMiddleware(next http.Handler) http.Handler {
 
 func NewAPI(database *sql.DB, authorizer Authorizer) *API {
 	if authorizer == nil {
-		authorizer = FakeHouseholdAuthorizer{}
+		authorizer = denyAuthorizer{}
 	}
 	return &API{db: database, auth: authorizer, repo: fitnessrepo.New(database, time.Now)}
 }
