@@ -613,6 +613,42 @@ def sync_training_and_body(api: Garmin, end: date, output_dir: Path) -> None:
     _write_json_value(output_dir / "body_measurements.json", body)
 
 
+def _contains_weight_measurement(value: Any) -> bool:
+    """Return whether a Garmin weight response contains a numeric weight."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).lower().replace("_", "")
+            if "weight" in normalized and isinstance(item, (int, float)) and not isinstance(item, bool):
+                return True
+            if _contains_weight_measurement(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_weight_measurement(item) for item in value)
+    return False
+
+
+def sync_weight_measurements(
+    api: Garmin, start: date, end: date, output_dir: Path
+) -> bool:
+    """Fetch only weigh-ins for the requested range.
+
+    Garmin's body-composition range endpoint is both expensive and generally
+    empty for accounts without a composition-capable scale. Weigh-ins are the
+    useful subset for this importer, so do not request composition or blood
+    pressure data here. Also avoid creating a misleading empty record.
+    """
+    payload = _optional_api(
+        lambda: api.get_weigh_ins(start.isoformat(), end.isoformat()), {}
+    )
+    if not _contains_weight_measurement(payload):
+        return False
+    body = {"weight": payload}
+    day_text = end.isoformat()
+    _write_raw_json(output_dir / "raw" / "body_measurements" / f"{day_text}.json", body)
+    _write_json_value(output_dir / "body_measurements.json", body)
+    return True
+
+
 def sync_sleep(
     api: Garmin, start: date, end: date, output_dir: Path, raw_dir: Path | None = None
 ) -> int:

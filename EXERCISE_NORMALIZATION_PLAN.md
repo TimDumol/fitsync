@@ -730,7 +730,7 @@ Use the focused commands during iteration and the complete commands at the end:
 ```
 
 No mobile UI change is expected, but repository normalization affects the
-mobile sync path. If any TypeScript, OpenAPI, generated mobile type, or mobile
+mobile sync path. If any Kotlin contract, OpenAPI, mobile transport type, or mobile
 sync file changes, also run:
 
 ```sh

@@ -60,9 +60,11 @@ func DecodeHRV(_ string, payload json.RawMessage) (DecoderResult[HRVSummary], er
 		return DecoderResult[HRVSummary]{}, err
 	}
 	value := HRVSummary{
-		OvernightAverage: firstNumber(object, "hrv.hrvSummary.overnightAverage", "hrv_summary.overnight_average", "overnight_hrv"),
-		WeeklyAverage:    firstNumber(object, "hrv.hrvSummary.weeklyAverage", "hrv_summary.weekly_average", "weekly_hrv"),
-		Status:           text(object, "hrv.hrvSummary.status", "hrv_status"),
+		// Garmin's native HRV response uses lastNightAvg and weeklyAvg. The
+		// overnightAverage/weeklyAverage names are the normalized legacy shape.
+		OvernightAverage: firstNumber(object, "hrv.hrvSummary.lastNightAvg", "hrv.hrvSummary.overnightAverage", "hrvSummary.lastNightAvg", "hrvSummary.overnightAverage", "hrv_summary.overnight_average", "overnight_hrv"),
+		WeeklyAverage:    firstNumber(object, "hrv.hrvSummary.weeklyAvg", "hrv.hrvSummary.weeklyAverage", "hrvSummary.weeklyAvg", "hrvSummary.weeklyAverage", "hrv_summary.weekly_average", "weekly_hrv"),
+		Status:           text(object, "hrv.hrvSummary.status", "hrvSummary.status", "hrv_status"),
 	}
 	return DecoderResult[HRVSummary]{Value: value, Completeness: Availability{"hrv": value.OvernightAverage != nil || value.WeeklyAverage != nil}}, nil
 }

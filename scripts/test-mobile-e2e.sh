@@ -3,14 +3,15 @@ set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-mobile_root="$repo_root/apps/mobile"
+mobile_root="$repo_root/apps/android"
+flow_target="${1:-$repo_root/.maestro}"
+if [[ "$flow_target" != /* ]]; then flow_target="$PWD/$flow_target"; fi
 apk_output="/tmp/fitsync-mobile-e2e.apk"
 maestro_artifacts="/tmp/fitsync-maestro"
 log_root="${FITSYNC_E2E_LOG_DIR:-/tmp}"
 run_id="$(date -u +%Y%m%d-%H%M%S)"
 log_file="$log_root/fitsync-mobile-e2e-$run_id.log"
 verbose="${FITSYNC_E2E_VERBOSE:-0}"
-native_project_created=false
 emulator_pid=""
 emulator_started=false
 target_device=""
@@ -34,9 +35,6 @@ finish() {
     kill "$emulator_pid" 2>/dev/null || true
     wait "$emulator_pid" 2>/dev/null || true
   fi
-  if [[ "$native_project_created" == true ]]; then
-    rm -rf -- "$mobile_root/android"
-  fi
   if [[ "$exit_code" == 0 ]]; then
     printf 'Mobile Maestro E2E passed.\nFull log: %s\n' "$log_file" >&3
   else
@@ -48,10 +46,6 @@ finish() {
 trap finish EXIT
 trap 'exit 130' INT TERM
 
-if ! command -v npm >/dev/null 2>&1; then
-  printf '%s\n' 'npm is required to build the mobile E2E app.' >&2
-  exit 1
-fi
 maestro_bin="$(command -v maestro || true)"
 if [[ -z "$maestro_bin" ]]; then
   printf '%s\n' 'Maestro CLI is required. Install it from https://docs.maestro.dev/getting-started.' >&2
@@ -90,7 +84,6 @@ cd "$mobile_root"
 export ANDROID_HOME="$android_sdk"
 export ANDROID_SDK_ROOT="$android_sdk"
 export PATH="$android_sdk/platform-tools:$android_sdk/emulator:$PATH"
-export EXPO_PUBLIC_E2E=1
 export MAESTRO_CLI_NO_ANALYTICS="${MAESTRO_CLI_NO_ANALYTICS:-1}"
 export MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED="${MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED:-true}"
 
@@ -139,20 +132,7 @@ while true; do
   sleep 1
 done
 
-if [[ "${FITSYNC_MOBILE_INSTALL:-0}" == 1 || ! -x node_modules/.bin/expo || ! -x node_modules/.bin/vitest || ! -x node_modules/.bin/tsc ]]; then
-  npm ci --include=dev
-fi
-npm run typecheck
-npm test
-
-if [[ ! -d android ]]; then
-  native_project_created=true
-fi
-
-npx expo prebuild --platform android --no-install
-gradle_workers="${FITSYNC_GRADLE_MAX_WORKERS:-1}"
-(cd android && ./gradlew --no-daemon --max-workers="$gradle_workers" assembleRelease)
-cp android/app/build/outputs/apk/release/app-release.apk "$apk_output"
+export FITSYNC_APPLICATION_ID=com.fitsync.mobile.nativefixtures
+FITSYNC_MOBILE_FIXTURES=1 FITSYNC_MOBILE_APK="$apk_output" "$repo_root/scripts/build-mobile.sh"
 "$adb_bin" -s "$target_device" install -r "$apk_output" >/dev/null
-
-"$maestro_bin" --device "$target_device" test "$repo_root/.maestro"
+"$maestro_bin" --device "$target_device" test "$flow_target"

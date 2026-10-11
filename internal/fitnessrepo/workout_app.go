@@ -396,8 +396,29 @@ func (r *Repository) PlanByID(ctx context.Context, athleteID, planID string, inc
 }
 
 func (r *Repository) ActivePlan(ctx context.Context, athleteID string, includeSteps bool) (PlanResult, error) {
+	// Publishing a plan is an immediate write, but a plan may be dated for a
+	// future training block. Prefer the dated plan that covers the athlete's
+	// local today so publishing that future block cannot hide the still-current
+	// plan from the Today screen. Fall back to the active plan during a gap
+	// between dated blocks or when a legacy plan has no dates.
+	timezone, err := r.AthleteTimezone(ctx, athleteID)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	today := r.clock().In(mustLocation(timezone)).Format("2006-01-02")
 	var id string
-	if err := r.db.QueryRowContext(ctx, "SELECT id FROM training_plans WHERE athlete_id=? AND status='active' AND deleted_at IS NULL", athleteID).Scan(&id); err != nil {
+	err = r.db.QueryRowContext(ctx, `SELECT id FROM training_plans
+		WHERE athlete_id=? AND deleted_at IS NULL AND status IN ('active','archived')
+		AND (start_date IS NULL OR start_date<=?)
+		AND (end_date IS NULL OR end_date>=?)
+		ORDER BY CASE WHEN status='active' AND active=1 THEN 0 ELSE 1 END,
+			CASE WHEN start_date IS NULL THEN 0 ELSE 1 END DESC,
+			start_date DESC,created_at DESC,sync_seq DESC,id DESC
+		LIMIT 1`, athleteID, today, today).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = r.db.QueryRowContext(ctx, "SELECT id FROM training_plans WHERE athlete_id=? AND status='active' AND active=1 AND deleted_at IS NULL", athleteID).Scan(&id)
+	}
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PlanResult{Sessions: []PlannedSession{}}, nil
 		}

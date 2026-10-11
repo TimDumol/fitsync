@@ -3,8 +3,9 @@ set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-mobile_root="$repo_root/apps/mobile"
-application_id="${FITSYNC_MOBILE_PACKAGE:-com.fitsync.mobile}"
+mobile_root="$repo_root/apps/android"
+application_id="${FITSYNC_MOBILE_PACKAGE:-${FITSYNC_APPLICATION_ID:-com.fitsync.mobile}}"
+cd "$repo_root"
 
 usage() {
   printf '%s\n' \
@@ -18,7 +19,7 @@ usage() {
     '  --fixtures              Build and install with test fixture data' \
     '' \
     'Environment:' \
-    '  FITSYNC_MOBILE_APK       APK path (default: apps/mobile/dist/fitsync-mobile.apk)' \
+    '  FITSYNC_MOBILE_APK       APK path (default: apps/android/dist/fitsync-mobile.apk)' \
     '  FITSYNC_MOBILE_BUILD=1   Always build the APK before installing' \
     '  FITSYNC_MOBILE_PACKAGE   Android application ID (default: com.fitsync.mobile)' \
     '  FITSYNC_ANDROID_DEVICE   ADB serial when more than one target is connected' \
@@ -58,6 +59,9 @@ else
   apk_path="$mobile_root/dist/fitsync-mobile.apk"
 fi
 fixture_marker="$apk_path.fixtures"
+if [[ "$fixtures" == 1 ]]; then
+  application_id=com.fitsync.mobile.nativefixtures
+fi
 
 android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/home/timdumol/Android/Sdk}}"
 adb_bin="${FITSYNC_ADB:-}"
@@ -91,18 +95,28 @@ if [[ -z "${FITSYNC_ANDROID_DEVICE:-}" && -z "${ANDROID_SERIAL:-}" && -f "$phone
     's/^[[:space:]]*FITSYNC_ANDROID_DEVICE[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' \
     "$phonerc_path" | tail -n 1)"
 fi
-target_device="${FITSYNC_ANDROID_DEVICE:-${ANDROID_SERIAL:-$configured_device}}"
+target_device="${FITSYNC_ANDROID_DEVICE:-${ANDROID_SERIAL:-}}"
+mapfile -t connected_devices < <("$adb_bin" devices | awk 'NR > 1 && $2 == "device" { print $1 }')
+if [[ "$phone_only" == 1 ]]; then
+  phone_devices=()
+  for device in "${connected_devices[@]}"; do
+    if ! is_emulator "$device"; then
+      phone_devices+=("$device")
+    fi
+  done
+  connected_devices=("${phone_devices[@]}")
+fi
+
+if [[ -z "$target_device" && -n "$configured_device" ]]; then
+  for device in "${connected_devices[@]}"; do
+    if [[ "$device" == "$configured_device" ]]; then
+      target_device="$configured_device"
+      break
+    fi
+  done
+fi
+
 if [[ -z "$target_device" ]]; then
-  mapfile -t connected_devices < <("$adb_bin" devices | awk 'NR > 1 && $2 == "device" { print $1 }')
-  if [[ "$phone_only" == 1 ]]; then
-    phone_devices=()
-    for device in "${connected_devices[@]}"; do
-      if ! is_emulator "$device"; then
-        phone_devices+=("$device")
-      fi
-    done
-    connected_devices=("${phone_devices[@]}")
-  fi
   case "${#connected_devices[@]}" in
     0)
       if [[ "$phone_only" == 1 ]]; then
@@ -144,8 +158,9 @@ installed_fixture_mode=""
 if [[ -f "$fixture_marker" ]]; then
   installed_fixture_mode="$(<"$fixture_marker")"
 fi
-if [[ ! -f "$apk_path" || "${FITSYNC_MOBILE_BUILD:-0}" == 1 || ("$custom_apk" == 0 && "$installed_fixture_mode" != "$fixtures") ]]; then
-  FITSYNC_MOBILE_FIXTURES="$fixtures" FITSYNC_MOBILE_APK="$apk_path" "$repo_root/scripts/build-mobile.sh"
+apk_package="$(cat "$apk_path.package" 2>/dev/null || printf '%s' com.fitsync.mobile)"
+if [[ ! -f "$apk_path" || "${FITSYNC_MOBILE_BUILD:-0}" == 1 || ("$custom_apk" == 0 && ("$installed_fixture_mode" != "$fixtures" || "$apk_package" != "$application_id")) ]]; then
+  FITSYNC_APPLICATION_ID="$application_id" FITSYNC_MOBILE_FIXTURES="$fixtures" FITSYNC_MOBILE_APK="$apk_path" "$repo_root/scripts/build-mobile.sh"
   installed_fixture_mode="$fixtures"
 fi
 if [[ ! -f "$apk_path" ]]; then
@@ -153,6 +168,10 @@ if [[ ! -f "$apk_path" ]]; then
   exit 1
 fi
 
+if [[ "$installed_fixture_mode" == 1 && ("$application_id" != com.fitsync.mobile.nativefixtures || "$(cat "$apk_path.package" 2>/dev/null)" != com.fitsync.mobile.nativefixtures) ]]; then
+  printf '%s\n' 'Refusing to install fixtures over a non-test app. Rebuild with --fixtures.' >&2
+  exit 1
+fi
 fixture_label="${installed_fixture_mode:-unknown}"
 printf 'Installing %s on %s (fixtures: %s)...\n' "$apk_path" "$target_device" "$fixture_label"
 install_options=(-r)

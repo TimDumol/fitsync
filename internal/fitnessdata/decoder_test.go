@@ -64,6 +64,21 @@ func TestDecodeDetailStripsCoordinates(t *testing.T) {
 	}
 }
 
+func TestDecodeHRVGarminResponseShape(t *testing.T) {
+	value, err := DecodeHRV("sleep", json.RawMessage(`{
+		"hrv": {"hrvSummary": {"lastNightAvg": 48, "weeklyAvg": 45, "status": "BALANCED"}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Value.OvernightAverage == nil || *value.Value.OvernightAverage != 48 || value.Value.WeeklyAverage == nil || *value.Value.WeeklyAverage != 45 {
+		t.Fatalf("HRV averages = %#v", value.Value)
+	}
+	if value.Value.Status == nil || *value.Value.Status != "BALANCED" || !value.Completeness["hrv"] {
+		t.Fatalf("HRV status/availability = %#v", value)
+	}
+}
+
 func TestDecodeDetailMetricEnvelopeAndAvailability(t *testing.T) {
 	value, err := DecodeActivityDetail("activity_details", json.RawMessage(`{
 		"splits":[{"splitNumber":1,"distanceKm":1,"duration":300,"averageHR":150,"heartRateAtEnd":152}],

@@ -1,98 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "$script_dir/.." && pwd)"
-mobile_root="$repo_root/apps/mobile"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/home/timdumol/Android/Sdk}}"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
 fixtures="${FITSYNC_MOBILE_FIXTURES:-0}"
-
-case "$fixtures" in
-  0|1)
-    ;;
-  *)
-    printf '%s\n' 'FITSYNC_MOBILE_FIXTURES must be 0 or 1.' >&2
-    exit 2
-    ;;
-esac
-
-if ! command -v npm >/dev/null 2>&1; then
-  printf '%s\n' 'npm is required to build the mobile app.' >&2
-  exit 1
+case "$fixtures" in 0|1) ;; *) echo 'FITSYNC_MOBILE_FIXTURES must be 0 or 1.' >&2; exit 2 ;; esac
+if [[ "$fixtures" == 1 ]]; then
+  export FITSYNC_APPLICATION_ID=com.fitsync.mobile.nativefixtures
 fi
-
-default_java_home="/tmp/prestosupuesto-toolchain/jdk-21.0.12.1+1"
-java_home="${JAVA_HOME:-}"
-if [[ -z "$java_home" ]] &&
-  { ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; } &&
-  [[ -x "$default_java_home/bin/java" && -x "$default_java_home/bin/javac" ]]; then
-  java_home="$default_java_home"
-fi
-if [[ -n "$java_home" && -x "$java_home/bin/java" && -x "$java_home/bin/javac" ]]; then
-  export JAVA_HOME="$java_home"
-  export PATH="$JAVA_HOME/bin:$PATH"
-fi
-if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
-  printf '%s\n' 'a JDK (java and javac) is required to build the Android APK.' >&2
-  exit 1
-fi
-
-android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/home/timdumol/Android/Sdk}}"
-if [[ -z "$android_sdk" || ! -x "$android_sdk/platform-tools/adb" ]]; then
-  printf '%s\n' 'ANDROID_HOME or ANDROID_SDK_ROOT must point to an Android SDK.' >&2
-  exit 1
-fi
-
-cd "$mobile_root"
-# Expo's Metro subprocesses warn when both NO_COLOR and FORCE_COLOR are present.
-unset NO_COLOR FORCE_COLOR
-export ANDROID_HOME="$android_sdk"
-export ANDROID_SDK_ROOT="$android_sdk"
-export EXPO_PUBLIC_API_BASE_URL="${EXPO_PUBLIC_API_BASE_URL:-https://api.aries.timdumol.com}"
-export EXPO_PUBLIC_POCKET_ID_ISSUER="${EXPO_PUBLIC_POCKET_ID_ISSUER:-https://auth.aries.timdumol.com}"
-export EXPO_PUBLIC_OAUTH_CLIENT_ID="${EXPO_PUBLIC_OAUTH_CLIENT_ID:-fitsync-mobile}"
-export EXPO_PUBLIC_E2E="$fixtures"
-export EXPO_PUBLIC_BUILD_TIMESTAMP="${FITSYNC_BUILD_TIMESTAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-native_compile_jobs="${FITSYNC_NATIVE_COMPILE_JOBS:-2}"
-if [[ ! "$native_compile_jobs" =~ ^[1-9][0-9]*$ ]]; then
-  printf '%s\n' 'FITSYNC_NATIVE_COMPILE_JOBS must be a positive integer.' >&2
-  exit 2
-fi
-export FITSYNC_NATIVE_COMPILE_JOBS="$native_compile_jobs"
-if [[ -n "${FITSYNC_MOBILE_APK:-}" ]]; then
-  apk_output="$FITSYNC_MOBILE_APK"
-elif [[ "$fixtures" == 1 ]]; then
-  apk_output="$mobile_root/dist/fitsync-mobile-fixtures.apk"
-else
-  apk_output="$mobile_root/dist/fitsync-mobile.apk"
-fi
-fixture_marker="$apk_output.fixtures"
-mkdir -p "$(dirname -- "$apk_output")"
-rm -f -- "$apk_output" "$fixture_marker"
-
-# Install the exact dependency tree recorded in the lockfile.
-npm ci --include=dev
-
-npm run typecheck
-npm test
-
-# Expo generates the native Android project from app.json. Keep that generated
-# project temporary and retain only the installable APK in dist/.
-native_project_created=false
-if [[ ! -d android ]]; then
-  native_project_created=true
-fi
-cleanup() {
-  if [[ "$native_project_created" == true ]]; then
-    rm -rf -- "$mobile_root/android"
+cd "$repo_root/apps/android"
+# Serialize entrypoints which share Gradle configuration and generated schema files.
+exec 9>"$repo_root/apps/android/.build.lock"
+flock 9
+if [[ ! -x ./gradlew ]]; then
+  gradle_bin="$(command -v gradle || true)"
+  if [[ -z "$gradle_bin" ]]; then
+    for candidate in "$HOME"/.gradle/wrapper/dists/gradle-8.13-bin/*/gradle-8.13/bin/gradle; do
+      if [[ -x "$candidate" ]]; then gradle_bin="$candidate"; break; fi
+    done
   fi
-}
-trap cleanup EXIT
-
-npx expo prebuild --platform android --no-install
-export NODE_ENV=production
-gradle_workers="${FITSYNC_GRADLE_MAX_WORKERS:-1}"
-(cd android && ./gradlew --no-daemon --max-workers="$gradle_workers" assembleRelease)
-
-cp android/app/build/outputs/apk/release/app-release.apk "$apk_output"
-printf '%s\n' "$fixtures" >"$fixture_marker"
-printf 'built APK at %s (fixtures: %s)\n' "$apk_output" "$fixtures"
+  if [[ -z "$gradle_bin" ]]; then echo 'Gradle 8.13 is required to bootstrap the wrapper.' >&2; exit 1; fi
+  wrapper_root="$(mktemp -d /tmp/fitsync-wrapper.XXXXXX)"
+  trap 'rm -rf -- "$wrapper_root"' EXIT
+  touch "$wrapper_root/settings.gradle"
+  "$gradle_bin" --no-daemon -p "$wrapper_root" wrapper --gradle-version 8.13
+  cp "$wrapper_root/gradlew" "$wrapper_root/gradlew.bat" .
+  mkdir -p gradle/wrapper
+  cp "$wrapper_root/gradle/wrapper/gradle-wrapper.jar" "$wrapper_root/gradle/wrapper/gradle-wrapper.properties" gradle/wrapper/
+  chmod +x gradlew
+fi
+if [[ "$fixtures" == 1 ]]; then variant=fixtures; else variant=production; fi
+# Keep task history separate when production and fixture source sets alternate.
+options=(--no-daemon --project-cache-dir "$repo_root/apps/android/.gradle/$variant" --max-workers="${FITSYNC_GRADLE_MAX_WORKERS:-2}")
+if [[ -n "${FITSYNC_ANDROID_VERSION_CODE:-}" ]]; then options+=("-PversionCode=$FITSYNC_ANDROID_VERSION_CODE"); fi
+if [[ "$fixtures" == 1 ]]; then options+=(-Pfixtures=true); fi
+if [[ "${1:-}" == --test ]]; then
+  ./gradlew "${options[@]}" testReleaseUnitTest lintRelease
+  exit
+fi
+./gradlew "${options[@]}" testReleaseUnitTest lintRelease assembleRelease
+if [[ "$fixtures" == 1 ]]; then default_apk="$repo_root/apps/android/dist/fitsync-mobile-fixtures.apk"; else default_apk="$repo_root/apps/android/dist/fitsync-mobile.apk"; fi
+apk="${FITSYNC_MOBILE_APK:-$default_apk}"
+mkdir -p -- "$(dirname -- "$apk")"
+cp "app/build/$variant/outputs/apk/release/app-release.apk" "$apk"
+printf '%s\n' "$fixtures" > "$apk.fixtures"
+if [[ "$fixtures" == 1 ]]; then default_package=com.fitsync.mobile.nativefixtures; else default_package=com.fitsync.mobile; fi
+printf '%s\n' "${FITSYNC_APPLICATION_ID:-$default_package}" > "$apk.package"
+printf 'Built native APK at %s (fixtures: %s)\n' "$apk" "$fixtures"

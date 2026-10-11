@@ -13,10 +13,10 @@ from urllib.parse import urlsplit
 from garminconnect import Garmin, GarminConnectAuthenticationError, GarminConnectConnectionError, GarminConnectTooManyRequestsError
 
 from .auth import GarminSyncError, _safe_token
-from .datasets import sync_activities, sync_activity_details, sync_daily_recovery, sync_sleep, sync_training_and_body
+from .datasets import sync_activities, sync_activity_details, sync_daily_recovery, sync_sleep, sync_weight_measurements
 from .uploader import upload_mobile
 
-STAGES = ("authenticating", "fetching_activities", "fetching_sleep", "fetching_recovery", "fetching_activity_details", "fetching_training", "uploading", "cleaning_up", "complete")
+STAGES = ("authenticating", "fetching_activities", "fetching_sleep", "fetching_recovery", "fetching_activity_details", "fetching_measurements", "uploading", "cleaning_up", "complete")
 
 
 def _validate_config(config: dict[str, Any]) -> tuple[date, date, Path]:
@@ -109,8 +109,8 @@ def sync(config: dict[str, Any], token_json: str, access_token: str, progress_ca
         if runtime_config["extended"]:
             _progress(progress_callback, "fetching_activity_details", 0, len(activities), "Fetching activity details")
             sync_activity_details(client, activities, work_dir, work_dir / "raw" / "activity_details")
-            _progress(progress_callback, "fetching_training", 0, 1, "Fetching Garmin training data")
-            sync_training_and_body(client, end, work_dir)
+            _progress(progress_callback, "fetching_measurements", 0, 1, "Fetching Garmin weight data")
+            sync_weight_measurements(client, start, end, work_dir)
         _progress(progress_callback, "uploading", 0, 1, "Uploading Garmin data to FitSync")
         result = upload_mobile(runtime_config, access_token, progress_callback=progress_callback)
         result["refreshed_garmin_token_json"] = _safe_token(client)

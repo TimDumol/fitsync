@@ -3,6 +3,18 @@ package mcpserver
 import "github.com/modelcontextprotocol/go-sdk/mcp"
 
 func obj(properties map[string]any, required ...string) map[string]any {
+	for name, description := range map[string]string{
+		"client_updated_at": "Unix epoch milliseconds (not seconds). For an edit use a value strictly greater than the stored client_updated_at; preserve it on retries. Check submitted_version_won before claiming success.",
+		"expected_sync_seq": "Copy sync_seq from a fresh get_workout response. A conflict means no operations were applied; reread and review before retrying.",
+		"recorded_at":       "RFC3339 timestamp with an explicit UTC offset, e.g. 2026-10-03T09:00:00+02:00.",
+		"started_at":        "RFC3339 timestamp with an explicit UTC offset.",
+		"order":             "Chronological order; defaults to desc (get_training_timeline defaults to asc).",
+		"cursor":            "Opaque next_cursor from the preceding response. Keep all filters and ordering unchanged. Continue until next_cursor is absent before treating the result as complete.",
+	} {
+		if property, ok := properties[name].(map[string]any); ok {
+			property["description"] = description
+		}
+	}
 	result := map[string]any{"type": "object", "additionalProperties": false, "properties": properties}
 	if len(required) > 0 {
 		result["required"] = required
@@ -48,7 +60,7 @@ func dateSchema() map[string]any {
 	return map[string]any{"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
 }
 func targetProp() map[string]any {
-	return map[string]any{"type": "string", "format": "uuid", "maxLength": 36}
+	return map[string]any{"type": "string", "format": "uuid", "maxLength": 36, "description": "Omit to use the authenticated athlete. Supply only an authorized athlete UUID; never infer it from a name."}
 }
 func uuidv7Prop() map[string]any {
 	return map[string]any{
@@ -63,7 +75,7 @@ func idempotencyKeyProp() map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"maxLength":   256,
-		"description": "Optional caller-supplied stable key used to make retries address the same record.",
+		"description": "Stable key for one logical record, scoped to this athlete and record type (not its parent). Reuse on retries; use distinct keys for every entry/session/step/group. Without a stable ID or key, retrying a create can produce duplicates.",
 	}
 }
 func targetOnlySchema() map[string]any { return obj(map[string]any{"target_athlete_id": targetProp()}) }
@@ -89,7 +101,7 @@ func timelineSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "include_unplanned": map[string]any{"type": "boolean"}, "include_entries": map[string]any{"type": "boolean"}, "order": orderProp(), "limit": integer(1, 100), "cursor": cursorProp()}, "from", "to")
 }
 func readinessSchema() map[string]any {
-	return obj(map[string]any{"target_athlete_id": targetProp(), "as_of": str(64), "session_date": dateSchema(), "proposed_session_type": str(64), "proposed_duration_minutes": integer(1, 1440), "proposed_intensity": enum("easy", "moderate", "hard", "maximal")}, "session_date", "proposed_session_type", "proposed_duration_minutes", "proposed_intensity")
+	return obj(map[string]any{"target_athlete_id": targetProp(), "as_of": map[string]any{"type": "string", "format": "date-time", "description": "RFC3339 timestamp with offset; defaults to now. At most five minutes in the future."}, "session_date": dateSchema(), "proposed_session_type": str(64), "proposed_duration_minutes": integer(1, 1440), "proposed_intensity": enum("easy", "moderate", "hard", "maximal")}, "session_date", "proposed_session_type", "proposed_duration_minutes", "proposed_intensity")
 }
 func strengthSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "exercise_keys": array(exerciseKeyProp(), 0, 30), "muscle_groups": array(str(128), 0, 30), "include_entries": map[string]any{"type": "boolean"}, "order": orderProp(), "limit": integer(1, 100), "cursor": cursorProp()}, "from", "to")
@@ -117,6 +129,28 @@ func deleteWorkoutSchema() map[string]any {
 }
 func patchWorkoutSchema() map[string]any {
 	operation := obj(map[string]any{"op": enum("set_linked_activity", "set_entry_rir", "set_entry_exercise_key", "set_entry_load_semantics", "set_entry_muscle_roles", "append_note"), "activity_id": str(128), "entry_id": str(128), "rir": number(0, 10), "exercise_key": exerciseKeyProp(), "laterality": enum("bilateral", "unilateral", "left", "right", "alternating", "unknown"), "reps_per_side": map[string]any{"type": "boolean"}, "load_basis": enum("total_external", "per_limb", "bodyweight_added", "assistance", "unknown"), "load_per_limb_kg": number(0, 2000), "total_external_load_kg": number(0, 4000), "added_load_kg": number(0, 2000), "direct_muscle_groups": array(str(128), 0, 10), "indirect_muscle_groups": array(str(128), 0, 10), "text": str(4000)}, "op")
+	// Each operation accepts only its own fields, so a misspecified operation
+	// cannot silently discard an agent's intended change.
+	fields := operation["properties"].(map[string]any)
+	variants := []any{}
+	for _, spec := range []struct {
+		name               string
+		required, optional []string
+	}{
+		{"set_linked_activity", []string{"activity_id"}, nil},
+		{"set_entry_rir", []string{"entry_id", "rir"}, nil},
+		{"set_entry_exercise_key", []string{"entry_id", "exercise_key"}, nil},
+		{"set_entry_load_semantics", []string{"entry_id", "load_basis"}, []string{"laterality", "reps_per_side", "load_per_limb_kg", "total_external_load_kg", "added_load_kg"}},
+		{"set_entry_muscle_roles", []string{"entry_id", "direct_muscle_groups", "indirect_muscle_groups"}, nil},
+		{"append_note", []string{"text"}, nil},
+	} {
+		properties := map[string]any{"op": enum(spec.name)}
+		for _, field := range append(append([]string{}, spec.required...), spec.optional...) {
+			properties[field] = fields[field]
+		}
+		variants = append(variants, obj(properties, append([]string{"op"}, spec.required...)...))
+	}
+	operation = map[string]any{"oneOf": variants}
 	return obj(map[string]any{"target_athlete_id": targetProp(), "workout_id": str(128), "expected_sync_seq": integer(0, 9223372036854775807), "client_updated_at": integer(0, 9223372036854775807), "operations": array(operation, 1, 50)}, "workout_id", "expected_sync_seq", "client_updated_at", "operations")
 }
 func painSchema() map[string]any {
@@ -154,7 +188,10 @@ func profileSchema() map[string]any {
 	return obj(map[string]any{"target_athlete_id": targetProp(), "client_updated_at": integer(0, 9223372036854775807), "timezone": str(64), "units": enum("metric"), "birth_year": nullable(integer(1900, 2100)), "goals": array(goalSchema(), 0, 10), "target_events": array(eventSchema(), 0, 20), "weekly_availability": map[string]any{"type": "object", "additionalProperties": array(windowSchema(), 0, 5)}, "preferences": obj(map[string]any{"run_days": integer(0, 7), "strength_sessions": integer(0, 7), "preferred_weekdays": array(enum("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"), 0, 7), "back_to_back_hard_days": map[string]any{"type": "boolean"}}), "heart_rate_zones": array(zoneSchema(), 0, 10), "pace_zones": array(zoneSchema(), 0, 10), "power_zones": array(zoneSchema(), 0, 10), "constraints": map[string]any{"type": "object", "additionalProperties": map[string]any{}}, "conditions_and_injuries": array(conditionSchema(), 0, 20)}, "client_updated_at", "timezone", "units")
 }
 func planSchema() map[string]any {
-	return obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "plan_id": str(64), "include_steps": map[string]any{"type": "boolean"}, "include_completed": map[string]any{"type": "boolean"}}, "from", "to")
+	result := obj(map[string]any{"target_athlete_id": targetProp(), "from": dateSchema(), "to": dateSchema(), "plan_id": str(64), "include_steps": map[string]any{"type": "boolean", "default": true}, "include_completed": map[string]any{"type": "boolean", "default": true}})
+	result["anyOf"] = []any{map[string]any{"required": []string{"plan_id"}}, map[string]any{"required": []string{"from", "to"}}}
+	result["dependentRequired"] = map[string]any{"from": []string{"to"}, "to": []string{"from"}}
+	return result
 }
 func targetsSchema() map[string]any {
 	return obj(map[string]any{"duration_minutes": nullable(number(0, 1440)), "distance_km": nullable(number(0, 10000)), "heart_rate_zone": nullable(str(32)), "pace_min_per_km_min": nullable(number(0, 1000)), "pace_min_per_km_max": nullable(number(0, 1000)), "sets": nullable(integer(0, 10000)), "reps": nullable(integer(0, 100000)), "load_kg": nullable(number(0, 2000))})
@@ -180,7 +217,7 @@ func prescriptionSchema() map[string]any {
 }
 func plannedStepSchema() map[string]any {
 	result := obj(map[string]any{
-		"step_id": uuidv7Prop(), "idempotency_key": idempotencyKeyProp(), "planned_session_id": nullable(str(64)), "athlete_id": nullable(str(64)),
+		"step_id": uuidv7Prop(), "idempotency_key": idempotencyKeyProp(),
 		"sequence_no": integer(1, 50), "step_type": enum("warmup", "exercise", "interval", "rest", "cooldown", "note"),
 		"exercise_key": nullable(exerciseKeyProp()), "exercise_name": nullable(str(256)), "prescription": prescriptionSchema(), "notes": nullable(str(4000)),
 	}, "sequence_no", "step_type", "prescription")
@@ -205,7 +242,7 @@ func plannedStepGroupSchema() map[string]any {
 func planDraftSessionSchema() map[string]any {
 	result := obj(map[string]any{
 		"session_id": uuidv7Prop(), "idempotency_key": idempotencyKeyProp(), "date": dateSchema(), "title": str(512), "description": nullable(str(4000)),
-		"sport": str(64), "session_type": str(64), "priority": str(32), "targets": targetsSchema(), "notes": nullable(str(4000)),
+		"sport": enum("running", "walking", "cycling", "swimming", "strength", "cardio", "mobility", "hiking", "multisport", "other"), "session_type": str(64), "priority": enum("optional", "normal", "key"), "targets": targetsSchema(), "notes": nullable(str(4000)),
 		"steps": array(plannedStepSchema(), 0, 50), "groups": array(plannedStepGroupSchema(), 0, 50),
 	}, "date", "sport", "session_type", "priority", "steps")
 	result["properties"].(map[string]any)["groups"].(map[string]any)["description"] = "Use groups for all execution-critical supersets and circuits; do not encode those relationships only in notes."
@@ -240,5 +277,5 @@ func readAnnotations() *mcp.ToolAnnotations {
 }
 
 func writeAnnotations(destructive bool) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true, DestructiveHint: boolPtr(destructive), OpenWorldHint: boolPtr(false)}
+	return &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: false, DestructiveHint: boolPtr(destructive), OpenWorldHint: boolPtr(false)}
 }

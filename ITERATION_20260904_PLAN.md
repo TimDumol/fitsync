@@ -752,7 +752,7 @@ of these surfaces together:
 - `entryPayload`, `StrengthEntry`, validation, and summaries;
 - MCP `entrySchema` and input structs;
 - `api/openapi.yaml`, regenerated `internal/httpapi/generated.go`, and REST mappings;
-- mobile TypeScript API/domain types, SQLite JSON payload handling, and workout UI;
+- mobile Kotlin API/domain contracts, SQLite JSON payload handling, and workout UI;
 - sync round-trip tests proving the fields survive server/mobile/server conversion.
 
 ## 13. Phase 8 — direct and indirect muscle volume
@@ -1032,7 +1032,7 @@ patch revisions, create `migrations/00006_coaching_normalization.sql`; do not ed
 existing migrations. Prefer code-owned exercise catalog aliases in this iteration.
 
 For mobile strength fields, add the next mobile SQLite migration in
-`apps/mobile/src/db/migrations.ts`, preserve old rows, and make reads tolerate absent
+`apps/android/app/src/main/kotlin/com/fitsync/nativeapp/data/Database.kt`, preserve old rows, and make reads tolerate absent
 columns/JSON keys. Update OpenAPI first, regenerate the Go and TypeScript clients with
 the repository's existing generation workflow, and never hand-edit generated output
 without updating its source contract.

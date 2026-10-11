@@ -26,12 +26,12 @@ __pycache__/
 *.p12
 *.pfx
 
-# Expo mobile app dependencies and generated output
-apps/mobile/node_modules/
-apps/mobile/.expo/
-apps/mobile/dist/
-apps/mobile/android/
-apps/mobile/ios/
-# Gradle output for local Expo modules
-apps/mobile/modules/garmin-sync/android/build/
-android/build/
+# Android app
+apps/android/dist/
+apps/android/.gradle/
+apps/android/.kotlin/
+apps/android/local.properties
+apps/android/.build.lock
+apps/android/**/build/
+!apps/android/app/src/**/data/
+!apps/android/app/src/**/data/*.kt

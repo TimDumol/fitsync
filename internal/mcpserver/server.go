@@ -651,7 +651,7 @@ func NewWithClock(api *httpapi.API, authenticator *fitnessauth.Authenticator, cl
 		clock = time.Now
 	}
 	s := &Server{api: api, auth: authenticator, clock: clock, repo: fitnessrepo.New(api.Database(), clock)}
-	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "fitnessd", Version: "2.0.0", Description: "Household fitness data"}, &mcp.ServerOptions{PageSize: maxToolResults})
+	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "fitnessd", Version: "2.0.0", Description: "Household fitness data"}, &mcp.ServerOptions{PageSize: maxToolResults, Instructions: agentInstructions})
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_context", Description: "Get a bounded decision-ready snapshot for fitness guidance, not diagnosis or emergency assessment.", Annotations: readAnnotations(), InputSchema: trainingContextSchema()}, s.trainingContext)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_daily_health", Description: "Read normalized daily sleep, recovery, and wellness metrics.", Annotations: readAnnotations(), InputSchema: dailyHealthSchema()}, s.dailyHealth)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_activities", Description: "Read normalized, bounded activity summaries for training analysis.", Annotations: readAnnotations(), InputSchema: activitySchema()}, s.activities)
@@ -662,22 +662,23 @@ func NewWithClock(api *httpapi.API, authenticator *fitnessauth.Authenticator, cl
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_strength_workouts", Description: "Read structured strength sessions, entries, and muscle-group summaries.", Annotations: readAnnotations(), InputSchema: strengthSchema()}, s.strength)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_exercise_progress", Description: "Read bounded progress for one reviewed exercise alias without making claims from ambiguous loads.", Annotations: readAnnotations(), InputSchema: exerciseProgressSchema()}, s.exerciseProgress)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "resolve_exercises", Description: "Resolve a batch of free-form exercise names to FitSync canonical keys before a plan or workout write. Exact aliases resolve automatically; non-exact matches are suggestions only.", Annotations: readAnnotations(), InputSchema: resolveExercisesSchema()}, s.resolveExercises)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_workout", Description: "Atomically create or replace one structured workout and its ordered entries. Omit uncertain exercise_key values; never invent keys. Free-form exercise_name values are preserved and exact aliases are normalized. Omit new IDs to have the server generate UUIDv7 values; use idempotency_key to make retries address the same record.", Annotations: writeAnnotations(false), InputSchema: upsertWorkoutSchema()}, s.upsertWorkout)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "patch_workout", Description: "Apply a bounded reviewed operation list to one workout atomically with optimistic concurrency; omit uncertain exercise keys and never invent them. Untouched entries remain unchanged.", Annotations: writeAnnotations(false), InputSchema: patchWorkoutSchema()}, s.patchWorkout)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_workout", Description: "Atomically create or replace one entire structured workout and its ordered entries. Omitted fields are cleared and omitted entries are removed. Read get_workout first for edits; prefer patch_workout for supported partial changes. Omit uncertain exercise_key values; never invent keys. Free-form exercise_name values are preserved and exact aliases are normalized. Omit new IDs to have the server generate UUIDv7 values; use idempotency_key to make retries address the same record.", Annotations: writeAnnotations(true), InputSchema: upsertWorkoutSchema()}, s.upsertWorkout)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "patch_workout", Description: "Apply a bounded reviewed operation list to one workout atomically with optimistic concurrency; omit uncertain exercise keys and never invent them. Untouched entries remain unchanged.", Annotations: writeAnnotations(true), InputSchema: patchWorkoutSchema()}, s.patchWorkout)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "delete_workout", Description: "Tombstone one workout and its entries using last-write-wins.", Annotations: writeAnnotations(true), InputSchema: deleteWorkoutSchema()}, s.deleteWorkout)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_checkins", Description: "Read subjective readiness check-ins in a bounded date range.", Annotations: readAnnotations(), InputSchema: checkinsSchema()}, s.checkins)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "record_checkin", Description: "Create or replace one subjective readiness check-in. Omit a new checkin_id to have the server generate a UUIDv7; use idempotency_key to make retries address the same record.", Annotations: writeAnnotations(false), InputSchema: recordCheckinSchema()}, s.recordCheckin)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "record_quick_readiness", Description: "Record a bounded quick readiness check-in with separate leg-freshness and pain-presence signals.", Annotations: writeAnnotations(false), InputSchema: quickReadinessSchema()}, s.recordQuickReadiness)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "record_checkin", Description: "Create or replace one subjective readiness check-in. Omit a new checkin_id to have the server generate a UUIDv7; use idempotency_key to make retries address the same record.", Annotations: writeAnnotations(true), InputSchema: recordCheckinSchema()}, s.recordCheckin)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "record_quick_readiness", Description: "Record a bounded quick readiness check-in with separate leg-freshness and pain-presence signals.", Annotations: writeAnnotations(true), InputSchema: quickReadinessSchema()}, s.recordQuickReadiness)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_athlete_profile", Description: "Read the editable athlete goals, zones, preferences, and constraints.", Annotations: readAnnotations(), InputSchema: targetOnlySchema()}, s.profile)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_athlete_profile", Description: "Replace the editable athlete profile atomically.", Annotations: writeAnnotations(false), InputSchema: profileSchema()}, s.updateProfile)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_plan", Description: "Read the active training plan and planned sessions.", Annotations: readAnnotations(), InputSchema: planSchema()}, s.plan)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_training_plan_draft", Description: "Atomically create or replace one complete draft training plan. Omit uncertain exercise_key values; never invent keys. Free-form exercise_name values are preserved and exact aliases are normalized. Use groups for all execution-critical supersets and circuits; do not encode them only in notes. A two-member rounds group is a superset and a larger group is a circuit. Each group member is performed in declared order for every round, and each member's rest_seconds is recovery after that member (normally 0 for non-final members and the intended recovery after the final member). Group member set counts must equal rounds. Omit plan_id, session_id, step_id, and group_id to have the server generate UUIDv7 values; use each record's idempotency_key to make retries address the same record.", Annotations: writeAnnotations(false), InputSchema: planDraftSchema()}, s.upsertPlanDraft)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_athlete_profile", Description: "Replace the entire editable athlete profile atomically. Read it first and carry forward every field to retain; omitted fields are cleared.", Annotations: writeAnnotations(true), InputSchema: profileSchema()}, s.updateProfile)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_plan", Description: "Read the current training plan in an inclusive date range (maximum 366 days), or a specific plan_id including drafts and archives. With plan_id, dates are optional; when supplied they filter sessions. include_steps and include_completed default to true in both modes.", Annotations: readAnnotations(), InputSchema: planSchema()}, s.plan)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_training_plan_draft", Description: "Atomically create or replace one complete draft training plan. Omitted sessions, steps, and groups are removed; read get_training_plan by plan_id before editing and carry forward everything to retain. Omit uncertain exercise_key values; never invent keys. Free-form exercise_name values are preserved and exact aliases are normalized. Use groups for all execution-critical supersets and circuits; do not encode them only in notes. A two-member rounds group is a superset and a larger group is a circuit. Each group member is performed in declared order for every round, and each member's rest_seconds is recovery after that member (normally 0 for non-final members and the intended recovery after the final member). Group member set counts must equal rounds. Omit plan_id, session_id, step_id, and group_id to have the server generate UUIDv7 values; use each record's idempotency_key to make retries address the same record.", Annotations: writeAnnotations(true), InputSchema: planDraftSchema()}, s.upsertPlanDraft)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "publish_training_plan", Description: "Publish a draft training plan and archive the previous active plan.", Annotations: writeAnnotations(true), InputSchema: publishPlanSchema()}, s.publishPlan)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_workout", Description: "Read one authorized workout with prescribed-versus-actual details.", Annotations: readAnnotations(), InputSchema: workoutSchema()}, s.workout)
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_planned_session", Description: "Create or replace one planned training session. Omit new plan_id or session_id values to have the server generate UUIDv7 values; use idempotency keys for retries.", Annotations: writeAnnotations(false), InputSchema: plannedSessionSchema()}, s.upsertPlannedSession)
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "upsert_planned_session", Description: "Create or replace one planned training session. Supply the existing plan_id when adding to a plan; omitting it creates a separate active manual plan. For complete structured plans prefer upsert_training_plan_draft and publish_training_plan. Omit new plan_id or session_id values to have the server generate UUIDv7 values; use idempotency keys for retries.", Annotations: writeAnnotations(true), InputSchema: plannedSessionSchema()}, s.upsertPlannedSession)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_planned_session_status", Description: "Update planned-session status and owned completion links.", Annotations: writeAnnotations(true), InputSchema: plannedStatusSchema()}, s.updatePlannedStatus)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "get_training_analysis", Description: "Calculate bounded deterministic period and comparison aggregates.", Annotations: readAnnotations(), InputSchema: analysisSchema()}, s.analysis)
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "update_workout", Description: "Deprecated low-level sync mutation; use upsert_workout or delete_workout.", Annotations: writeAnnotations(true), InputSchema: legacyUpdateSchema()}, s.updateWorkout)
+	s.mcp.AddReceivingMiddleware(logToolCalls)
 	return s, nil
 }
 
@@ -1083,23 +1084,17 @@ func (s *Server) plan(ctx context.Context, _ *mcp.CallToolRequest, in PlanInput)
 	if e != nil {
 		return nil, planResultOutput{}, e
 	}
-	include := true
-	if in.IncludeCompleted != nil {
-		include = *in.IncludeCompleted
-	}
+	var value fitnessrepo.PlanResult
+	var err error
 	if in.PlanID != "" {
-		includeSteps := true
-		if in.IncludeSteps != nil {
-			includeSteps = *in.IncludeSteps
-		}
-		value, err := s.repo.PlanByID(ctx, id, in.PlanID, includeSteps)
-		if err != nil {
-			return nil, planResultOutput{}, err
-		}
-		output, err := toPlanResultOutput(value)
-		return nil, output, err
+		value, err = s.repo.PlanByID(ctx, id, in.PlanID, true)
+	} else {
+		value, err = s.repo.Plan(ctx, id, in.From, in.To, true)
 	}
-	value, err := s.repo.Plan(ctx, id, in.From, in.To, include)
+	if err != nil {
+		return nil, planResultOutput{}, err
+	}
+	value, err = filterPlanResult(value, in)
 	if err != nil {
 		return nil, planResultOutput{}, err
 	}

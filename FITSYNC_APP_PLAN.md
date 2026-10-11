@@ -2,7 +2,7 @@
 
 ## 1. Purpose and status
 
-This document is the implementation specification for a React Native + Expo
+This document is the implementation specification for a Kotlin/Compose Android
 workout logging application backed by the existing Fitnessd service.
 
 The required end-to-end workflow is:
@@ -655,196 +655,23 @@ The intended tool sequence is:
 Do not make ChatGPT perform one MCP call per session or step. The complete plan
 must be accepted as one bounded atomic graph.
 
-## 9. Expo application
+## 9. Android application
 
-Create the app under `apps/mobile/` so the Go repository root remains clean.
-Use an Expo-managed TypeScript application.
+The application lives in `apps/android/`. Compose renders Today, Plan, History,
+Settings, planned sessions, active workouts, summaries and diagnostic logs.
+Room stores aggregate JSON, workout drafts, timers and the transactional outbox.
+WorkManager retries writes and pulls incremental changes. AppAuth handles
+Pocket ID browser sign-in with PKCE; the Keystore protects persisted tokens.
+Rejected sessions prompt reauthentication without deleting offline data.
 
-Recommended dependencies:
+Only active plans drive Today and session execution. Cached drafts remain
+available for publishing after a canonical server lifecycle check. Successful
+empty active-plan responses clear the selection; offline failures preserve it.
 
-- Expo Router for navigation;
-- `expo-auth-session` for OAuth authorization code + PKCE;
-- `expo-secure-store` for refresh and access tokens;
-- `expo-sqlite` for durable local state;
-- TanStack Query for HTTP reads and cache invalidation;
-- `zod` for runtime validation of persisted and API data;
-- `date-fns` or an equally small date library;
-- `expo-notifications` only after core logging works.
-
-Do not store OAuth tokens in AsyncStorage or SQLite. Do not log token values,
-health payloads, workout notes, or injury information.
-
-### 9.1 Suggested layout
-
-```text
-apps/mobile/
-  app/
-    _layout.tsx
-    sign-in.tsx
-    (tabs)/
-      today.tsx
-      plan.tsx
-      history.tsx
-      settings.tsx
-    planned-session/[id].tsx
-    workout/[id].tsx
-    workout/[id]/summary.tsx
-  src/
-    api/
-      client.ts
-      generated.ts
-    auth/
-      AuthProvider.tsx
-      tokenStore.ts
-    db/
-      migrations.ts
-      repository.ts
-    sync/
-      pull.ts
-      outbox.ts
-    workout/
-      reducer.ts
-      types.ts
-    components/
-    hooks/
-  app.json
-  package.json
-  tsconfig.json
-```
-
-Generate or derive the TypeScript API client from the OpenAPI contract. Do not
-hand-maintain a second, incompatible set of transport interfaces.
-
-### 9.2 Local SQLite data
-
-Store:
-
-- selected athlete ID;
-- last successful `sync_seq` cursor per athlete;
-- cached plan aggregates;
-- cached workout aggregates;
-- active workout drafts;
-- a small outbox of pending workout saves/completions.
-
-An outbox item contains operation type, aggregate ID, serialized request, retry
-count, and next-attempt time. IDs are generated before the first local save.
-Successful server responses replace local aggregates and remove the outbox
-item.
-
-### 9.3 Authentication
-
-Use the existing Pocket ID authorization and token endpoints with PKCE. The app
-must:
-
-1. launch the system browser;
-2. handle an Expo deep-link callback;
-3. exchange the authorization code;
-4. store tokens in SecureStore;
-5. refresh before expiry;
-6. clear credentials and local sensitive caches on logout;
-7. call `/api/v2/me` to resolve accessible athletes.
-
-Use `fitness:read fitness:write openid offline_access` unless server scope policy
-is intentionally narrowed later.
-
-### 9.4 Screens
-
-#### Today
-
-- selected athlete and local date;
-- today's planned session or a rest-day state;
-- prescribed duration and summary;
-- start/resume button;
-- visible offline or pending-sync status.
-
-#### Plan
-
-- calendar or grouped chronological list;
-- active plan title, date range, and goal;
-- badges for planned, completed, skipped, and cancelled sessions;
-- a separate section for MCP-created drafts with a publish action.
-
-#### Planned session detail
-
-- ordered prescription steps;
-- all target sets or intervals;
-- notes and coaching cues;
-- completed-workout summary when available;
-- start, resume, or view-result action depending on state.
-
-#### Active workout
-
-- prescribed exercises and sets prepopulated as actual-entry drafts;
-- one-tap set completion;
-- editable reps, load, RIR/RPE, duration, and notes;
-- add/remove set and add unplanned exercise;
-- rest timer;
-- elapsed workout timer;
-- local autosave after every meaningful edit;
-- finish and discard actions with confirmation.
-
-Do not send one network request per set. Persist locally immediately and upload
-the complete aggregate opportunistically.
-
-#### History
-
-- paginated workouts ordered newest first;
-- planned/unplanned indicator;
-- summary of duration, effort, exercises, working sets, and volume;
-- detail view with prescribed-versus-actual values.
-
-#### Settings
-
-- athlete selector;
-- units and timezone display;
-- last sync cursor/time;
-- pending outbox count and manual retry;
-- logout.
-
-### 9.5 Active workout state machine
-
-Use an explicit reducer with these states:
-
-```text
-idle -> starting -> active -> finishing -> completed
-                         \-> discarded
-```
-
-The reducer owns entries, timers, validation, dirty state, and completion. The
-screen must not scatter this logic across component-local state.
-
-Starting a prescribed workout:
-
-1. generate a workout UUIDv7 and entry UUIDv7 values;
-2. copy prescribed set defaults into actual-entry drafts;
-3. retain `planned_session_id` and `planned_step_id` links;
-4. save locally before navigating to the active screen;
-5. enqueue an in-progress upload when online.
-
-On application launch, detect and offer to resume any active local workout.
-
-### 9.6 Sync behavior
-
-Run pull sync:
-
-- after sign-in;
-- when the selected athlete changes;
-- when the app returns to the foreground;
-- after a successful workout upload;
-- through pull-to-refresh.
-
-Process changes in ascending sequence order in one local SQLite transaction.
-Advance the local cursor only after all changes in the response are committed.
-Continue while `has_more=true`.
-
-Run the outbox before or after pull consistently. Recommended order is:
-
-1. upload pending workout mutations;
-2. pull server changes;
-3. refresh visible queries.
-
-Exact background execution is not required. Correctness must depend on durable
-local state and foreground retry.
+Workout editing supports reps, kg and RIR, completion toggles, notes, adding and
+removing entries, rest timers, offline completion and deletion. Garmin imports
+use the production Python bridge and shared `fitsync_garmin` engine.
+See `apps/android/README.md` for build, signing and storage details.
 
 ## 10. Validation and security
 
@@ -926,7 +753,7 @@ Use unit tests for:
 - token-store behavior without printing secrets;
 - date display in the athlete timezone.
 
-Add a small device E2E suite, using Maestro or an equivalent Expo-compatible
+Add a small device E2E suite, using Maestro or an equivalent Android
 runner, covering sign-in with a test issuer, start workout, record sets, restart,
 resume, complete, and observe synced history.
 
@@ -991,9 +818,9 @@ go generate ./...
 Generation must be deterministic: a second `go generate ./...` must leave the
 worktree unchanged.
 
-### Phase 5: Expo shell and authentication
+### Phase 5: Android shell and authentication
 
-1. Scaffold `apps/mobile`.
+1. Scaffold `apps/android`.
 2. Add navigation, configuration, auth, SecureStore, and `/me`.
 3. Add local SQLite migrations and generated API types.
 4. Implement athlete selection.
@@ -1062,7 +889,7 @@ database and test identity provider:
 - Use synthetic fixtures only.
 - Prefer focused verification during iteration, then run the complete repository
   checks before handoff.
-- Do not begin the Expo UI until the plan aggregate and API contracts are tested.
+- Do not begin the Android UI until the plan aggregate and API contracts are tested.
 - Do not silently broaden scope into nutrition, medical advice, social features,
   or wearable integration.
 - If an implementation choice is not specified, choose the smallest design that

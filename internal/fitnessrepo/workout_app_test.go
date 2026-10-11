@@ -89,6 +89,48 @@ func TestPlanDraftPublishWorkoutCompletionAndPull(t *testing.T) {
 	}
 }
 
+func TestActivePlanKeepsCurrentDatedBlockVisibleBeforeFuturePublish(t *testing.T) {
+	database := testDB(t)
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	repository := New(database, func() time.Time { return now })
+
+	currentPlanID, currentSessionID := v7(t), v7(t)
+	if _, err := repository.UpsertPlanDraft(context.Background(), testAthlete, PlanWrite{
+		Plan:     TrainingPlan{ID: currentPlanID, Title: "Current block", StartDate: stringPointer("2026-09-08"), EndDate: stringPointer("2026-09-13")},
+		Sessions: []PlannedSessionWrite{{ID: currentSessionID, PlanID: currentPlanID, Date: "2026-09-13", Title: "Strength C", Sport: "strength", SessionType: "strength_c", Priority: "normal"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.PublishPlan(context.Background(), testAthlete, currentPlanID); err != nil {
+		t.Fatal(err)
+	}
+
+	futurePlanID, futureSessionID := v7(t), v7(t)
+	if _, err := repository.UpsertPlanDraft(context.Background(), testAthlete, PlanWrite{
+		Plan:     TrainingPlan{ID: futurePlanID, Title: "Future block", StartDate: stringPointer("2026-09-15"), EndDate: stringPointer("2026-09-20")},
+		Sessions: []PlannedSessionWrite{{ID: futureSessionID, PlanID: futurePlanID, Date: "2026-09-15", Title: "Strength A", Sport: "strength", SessionType: "strength_a", Priority: "normal"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.PublishPlan(context.Background(), testAthlete, futurePlanID); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := repository.ActivePlan(context.Background(), testAthlete, true)
+	if err != nil || current.Plan == nil || current.Plan.ID != currentPlanID || len(current.Sessions) != 1 || current.Sessions[0].ID != currentSessionID {
+		t.Fatalf("current dated plan = %#v, %v", current, err)
+	}
+	if current.Plan.Status != "archived" {
+		t.Fatalf("current dated plan status = %q, want archived source block", current.Plan.Status)
+	}
+
+	now = time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	future, err := repository.ActivePlan(context.Background(), testAthlete, true)
+	if err != nil || future.Plan == nil || future.Plan.ID != futurePlanID || len(future.Sessions) != 1 || future.Sessions[0].ID != futureSessionID {
+		t.Fatalf("future dated plan = %#v, %v", future, err)
+	}
+}
+
 func TestPlanIdempotencyKeysRoundTrip(t *testing.T) {
 	repository := New(testDB(t), func() time.Time { return time.UnixMilli(20_000) })
 	planID, sessionID, stepID := v7(t), v7(t), v7(t)

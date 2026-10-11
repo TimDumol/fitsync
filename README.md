@@ -134,7 +134,7 @@ client, so no client secret is placed in the APK:
 
 ```text
 Name:             FitSync Mobile
-Client ID:        fitsync-mobile (or set EXPO_PUBLIC_OAUTH_CLIENT_ID to the generated ID)
+Client ID:        fitsync-mobile (or set FITSYNC_OAUTH_CLIENT_ID to the generated ID)
 Callback URL:     fitsync:///oauthredirect
 Public Client:    enabled
 PKCE:             enabled (S256)
@@ -151,24 +151,22 @@ compact JSON summary suitable for later loading into a sheet or database.
 
 ## Mobile Android APK
 
-The Expo mobile app is under `apps/mobile/`. Build an installable Android
-release APK with:
+The Kotlin/Compose Android app lives under `apps/android/`. See
+[Android instructions](apps/android/README.md) for configuration and signing.
+Build an installable production ARM64 APK with:
 
 ```bash
 ./scripts/build-mobile.sh
 ```
 
-The script installs the locked npm dependencies, runs the mobile typecheck and
-tests, generates the native Android project, and runs Gradle's
-`assembleRelease`. The APK is written to
-`apps/mobile/dist/fitsync-mobile.apk`; `dist/` is gitignored. Generated native
-project files are removed after the build.
+The script runs JVM/Compose tests and Android lint, then builds the release APK
+at `apps/android/dist/fitsync-mobile.apk`. It requires JDK 17+, Android SDK 35
+and the checked-in Gradle wrapper. Garmin imports run through embedded Python.
 
 Release builds default to the production API and Pocket ID endpoints. Override
-`EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_POCKET_ID_ISSUER`,
-`EXPO_PUBLIC_OAUTH_CLIENT_ID`, or `EXPO_PUBLIC_OAUTH_RESOURCE` in the build
-environment for another deployment. The OAuth resource defaults to
-`<EXPO_PUBLIC_API_BASE_URL>/mcp`.
+`FITSYNC_API_BASE_URL`, `FITSYNC_POCKET_ID_ISSUER`, `FITSYNC_OAUTH_CLIENT_ID`,
+or `FITSYNC_OAUTH_RESOURCE` for another deployment. The OAuth resource defaults
+to `<FITSYNC_API_BASE_URL>/mcp`.
 
 To install the APK on a connected Android device or emulator and launch the
 app, run:
@@ -176,6 +174,11 @@ app, run:
 ```bash
 ./scripts/install-mobile.sh
 ```
+
+With one ready ADB target connected, the helper automatically selects it and
+uses the release APK at `apps/android/dist/fitsync-mobile.apk`. Set a device or
+APK override only when multiple targets are connected or a different APK is
+needed.
 
 The script builds the APK automatically when it is missing. Set
 `FITSYNC_MOBILE_BUILD=1` to force a rebuild. With more than one ADB target
@@ -188,13 +191,8 @@ the real API and authentication by default, including phone installs. Pass
 `--fixtures` to build and install the fixture-backed app explicitly; fixture
 and normal APKs are cached separately so one cannot be mistaken for the other.
 
-On this system, the script defaults to these toolchain locations when the
-variables are unset:
-
-```text
-JAVA_HOME=/tmp/prestosupuesto-toolchain/jdk-21.0.12.1+1
-ANDROID_HOME=/home/timdumol/Android/Sdk
-```
+The build uses `JAVA_HOME` or the JDK on `PATH`. The Android SDK defaults to
+`/home/timdumol/Android/Sdk` when `ANDROID_HOME` and `ANDROID_SDK_ROOT` are unset.
 
 Override them for another machine, for example:
 
@@ -241,22 +239,19 @@ planned-session review, skipping a session, workout editing/rest/finish, and
 history/summary browsing. Run one flow while iterating with, for example:
 
 ```bash
-maestro test .maestro/flows/workout-lifecycle.yaml
+./scripts/test-mobile-e2e.sh .maestro/flows/workout-lifecycle.yaml
 ```
 
 For a faster phone-free check of the same fixture-backed core behavior, run:
 
 ```bash
 ./scripts/test-mobile-smoke.sh
-# or, from apps/mobile:
-npm run test:smoke
 ```
 
 This validates authentication data, plan review/skipping, workout editing and
 completion, and history/summary data. It does not replace Maestro UI coverage;
 it is intended for quick local iteration when no Android target is available.
-The script reuses an existing `node_modules` directory; set
-`FITSYNC_MOBILE_INSTALL=1` when the locked dependencies need reinstalling.
+The smoke suite runs JVM, Room/Robolectric and Compose tests plus Android lint.
 
 ## First run
 

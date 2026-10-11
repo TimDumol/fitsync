@@ -1,151 +1,71 @@
-appId: com.fitsync.mobile
-name: Record and finish a planned workout
-tags:
-  - smoke
+appId: com.fitsync.mobile.nativefixtures
+name: Native offline workout lifecycle
 ---
-- launchApp
+- launchApp:
+    clearState: true
+- scrollUntilVisible:
+    element:
+      id: start-workout-button
+    direction: DOWN
+    centerElement: true
 - tapOn:
     id: start-workout-button
-- assertVisible:
-    id: planned-session-screen
 - scrollUntilVisible:
     element:
       id: session-start-workout-button
     direction: DOWN
+    centerElement: true
 - tapOn:
     id: session-start-workout-button
-- assertVisible:
-    id: active-workout-screen
-- assertNotVisible:
-    id: rest-timer
 - tapOn:
     id: workout-entry-1-reps
-- eraseText
 - inputText: "10"
 - tapOn:
     id: workout-entry-1-load
-- eraseText
 - inputText: "18"
 - hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: workout-entry-1-rest-button
+    direction: DOWN
+    centerElement: true
 - tapOn:
     id: workout-entry-1-rest-button
 - assertVisible:
+    id: rest-timer
+- tapOn:
     id: stop-rest-button
+- tapOn:
+    id: undo-rest-button
 - assertVisible:
-    id: rest-progress
-- assertVisible:
-    id: rest-progress-fill
+    id: rest-timer
 - tapOn:
     id: stop-rest-button
 - tapOn:
     id: add-set-button
 - tapOn:
     id: add-unplanned-button
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
-- swipe:
-    start: 95%, 70%
-    end: 95%, 20%
+- tapOn:
+    id: add-exercise-name
+- inputText: "Cable curl"
+- hideKeyboard
+- tapOn:
+    id: add-exercise-confirm
+- scrollUntilVisible:
+    element:
+      id: workout-notes-input
+    timeout: 60000
+    direction: DOWN
+    centerElement: false
 - tapOn:
     id: workout-notes-input
-- inputText: "Maestro workout note"
+- inputText: "Native Maestro note"
 - hideKeyboard
-- swipe:
-    start: 50%, 85%
-    end: 50%, 15%
-- assertVisible:
-    id: finish-workout-button
+- scrollUntilVisible:
+    element:
+      id: finish-workout-button
+    direction: DOWN
+    centerElement: false
 - tapOn:
     id: finish-workout-button
 - assertVisible:

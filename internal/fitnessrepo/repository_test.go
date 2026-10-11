@@ -215,7 +215,7 @@ func TestDailyHealthReturnsStableSignalsAndFreshness(t *testing.T) {
 	}
 	insert("sleep", "sleep-2026-09-04", "2026-09-04", `{"sleep":{"dailySleepDTO":{"sleepTimeSeconds":22608,"napTimeSeconds":1800,"sleepScores":{"overall":{"value":59}}}}}`, 1234)
 	insert("body_battery_events", "bb-2026-09-04", "2026-09-04", `{"events":[{"eventType":"nap","eventStartTimeLocal":"2026-09-04T13:00:00+02:00","eventEndTimeLocal":"2026-09-04T13:30:00+02:00"}]}`, 1235)
-	insert("hrv", "hrv-2026-09-01", "2026-09-01", `{"hrv":{"hrvSummary":{"overnightAverage":0}}}`, 1236)
+	insert("hrv", "hrv-2026-09-01", "2026-09-01", `{"hrv":{"hrvSummary":{"lastNightAvg":0,"weeklyAvg":1,"status":"BALANCED"}}}`, 1236)
 	page, err := repository.DailyHealth(context.Background(), testAthlete, HealthQuery{From: "2026-09-04", To: "2026-09-04", Metrics: []string{"sleep"}, Limit: 10})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("health page = %#v, %v", page, err)

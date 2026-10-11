@@ -1,10 +1,12 @@
 import json
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fitsync_garmin.auth import GarminSyncError, cancel_login, resume_login, start_login
+from fitsync_garmin.datasets import sync_weight_measurements
 from fitsync_garmin.sleep import summarize_sleep
 from fitsync_garmin.uploader import MOBILE_MAX_RECORDS, upload_mobile, split_mobile_records
 
@@ -42,6 +44,21 @@ class _UploadResponse:
 
     def read(self):
         return b'{"records":1,"archives":0}'
+
+
+class _WeightApi:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def get_weigh_ins(self, start, end):
+        self.calls.append(("get_weigh_ins", start, end))
+        return self.payload
+
+    def __getattr__(self, name):
+        if name in {"get_body_composition", "get_blood_pressure", "get_training_status"}:
+            raise AssertionError(f"disabled Garmin endpoint was called: {name}")
+        raise AttributeError(name)
 
 
 class GarminCoreTests(unittest.TestCase):
@@ -103,6 +120,26 @@ class GarminCoreTests(unittest.TestCase):
             self.assertEqual(result["records_sent"], 1)
             self.assertFalse((work_dir / "manifest.json").exists())
             self.assertFalse((work_dir / "raw").exists())
+
+    def test_mobile_extended_measurements_fetch_weight_without_composition_endpoints(self):
+        with TemporaryDirectory() as directory:
+            work_dir = Path(directory)
+            api = _WeightApi({"dateWeightList": [{"calendarDate": "2026-09-03", "weight": 81.2}]})
+
+            self.assertTrue(sync_weight_measurements(api, date(2026, 9, 1), date(2026, 9, 3), work_dir))
+            self.assertEqual(api.calls, [("get_weigh_ins", "2026-09-01", "2026-09-03")])
+            self.assertEqual(
+                json.loads((work_dir / "raw" / "body_measurements" / "2026-09-03.json").read_text()),
+                {"weight": {"dateWeightList": [{"calendarDate": "2026-09-03", "weight": 81.2}]}},
+            )
+
+    def test_mobile_extended_measurements_omits_empty_weight_response(self):
+        with TemporaryDirectory() as directory:
+            work_dir = Path(directory)
+            api = _WeightApi({"dateWeightList": [], "totalAverage": {}})
+
+            self.assertFalse(sync_weight_measurements(api, date(2026, 9, 1), date(2026, 9, 3), work_dir))
+            self.assertFalse((work_dir / "body_measurements.json").exists())
 
     def test_curated_sleep_uses_canonical_24_hour_names(self):
         result = summarize_sleep(

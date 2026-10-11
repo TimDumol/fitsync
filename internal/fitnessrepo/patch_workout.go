@@ -56,8 +56,15 @@ func (r *Repository) PatchWorkout(ctx context.Context, athleteID, workoutID stri
 	for _, operation := range operations {
 		switch operation.Op {
 		case "set_linked_activity":
-			if operation.ActivityID == nil || *operation.ActivityID == "" || !r.OwnedActivity(ctx, athleteID, *operation.ActivityID) {
+			if operation.ActivityID == nil || *operation.ActivityID == "" {
 				return fail(errors.New("not_found: linked activity"))
+			}
+			var owned int
+			if err := tx.QueryRowContext(ctx, "SELECT 1 FROM garmin_records WHERE athlete_id=? AND dataset='activities' AND (record_key=? OR json_extract(payload_raw,'$.activityId')=? OR json_extract(payload_raw,'$.activity_id')=?)", athleteID, *operation.ActivityID, *operation.ActivityID, *operation.ActivityID).Scan(&owned); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fail(errors.New("not_found: linked activity"))
+				}
+				return fail(errors.New("internal_error: linked activity lookup"))
 			}
 			metadata["linked_activity_id"] = *operation.ActivityID
 		case "append_note":

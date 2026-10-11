@@ -29,8 +29,8 @@ an exercise and a prescription, but no relationship to adjacent exercises.
 `session_type` is a free string and cannot describe multiple differently
 structured sections within one session.
 
-The current mobile conversion in `apps/mobile/src/workout/types.ts` walks each
-step and emits all of its prescribed sets before moving to the next step. For
+A flat session conversion walks each step and emits all of its prescribed
+sets before moving to the next step. For
 two steps A and B with three sets each, it emits:
 
 ```text
@@ -42,10 +42,8 @@ the order nor timer behavior. The active workout also defaults a missing
 `rest_seconds` to 120 seconds after every set, which is usually wrong between
 members of a superset.
 
-The existing E2E fixture in `apps/mobile/src/api/e2e.ts` deliberately exhibits
-this problem: `session_type` is `superset`, while actual group membership is
-only described by notes. Update that fixture as part of this work so it proves
-the structured behavior instead.
+The E2E fixture in `apps/android/app/src/fixtures/assets/baseline.json` uses
+explicit group membership to prove the structured execution behavior.
 
 ## 3. Fixed design decisions
 
@@ -171,11 +169,8 @@ groups existed. Do not rewrite completed workout entries.
 - Do not reinterpret the existing top-level `Prescription.rounds`; leave its
   current interval-oriented compatibility behavior unchanged. New exercise
   round structure uses session `groups` only.
-- Old mobile builds will ignore neither unknown fields nor malformed shapes:
-  their Zod objects are strict. Therefore deploy a group-aware mobile build
-  before semantically migrating/publishing the live active plan, or coordinate
-  the rollout so the old build is no longer used. The server schema deployment
-  alone is safe while all groups remain empty.
+- Coordinate publication of grouped plans with a group-aware Android build.
+  The server schema deployment alone is safe while all groups remain empty.
 
 ## 4. Canonical contract
 
@@ -240,8 +235,7 @@ invalid_input: group members must be contiguous
 
 Add `Groups []PlannedStepGroup json:"groups,omitempty"` to
 `fitnessrepo.PlannedSession` and `fitnessrepo.PlannedSessionWrite`. Ensure the
-draft input, plan output, REST output, mobile generated types, and runtime Zod
-schemas all expose the same property.
+draft input, plan output, REST output, mobile transport contracts, and Kotlin domain helpers all expose the same property.
 
 MCP draft input example:
 
@@ -452,22 +446,14 @@ session conversion.
 
 Update:
 
-- `apps/mobile/src/api/generated.ts`;
-- `apps/mobile/src/api/schemas.ts`;
+- `apps/android/app/src/main/kotlin/com/fitsync/nativeapp/data/Api.kt`;
+- `apps/android/app/src/main/kotlin/com/fitsync/nativeapp/data/Contracts.kt`;
 - API fixtures and client/schema tests.
 
-Add:
-
-```ts
-export interface PlannedStepGroup {
-  group_id: UUID;
-  label?: string;
-  mode: 'rounds';
-  rounds: number;
-  step_sequence_nos: number[];
-  notes?: string | null;
-}
-```
+Retain the `groups` JSON array losslessly through Contracts, Room caching and
+workout payloads. Validate group UUIDs, round counts, modes and ordered member
+sequences at the API boundary. Kotlin domain helpers read the same snake_case
+fields used by the API.
 
 Add `groups?: PlannedStepGroup[]` to `PlannedSession`. Normalize absent groups
 to `[]` at the API boundary or consistently use `session.groups ?? []`; do not
@@ -483,8 +469,8 @@ field addition.
 
 ### 10.1 Build a tested execution-order helper
 
-Do not embed group expansion logic directly in JSX. Add pure helpers in
-`apps/mobile/src/workout/types.ts` or a focused `execution.ts` module.
+Do not embed group expansion logic directly in Compose. Add pure helpers in
+`apps/android/app/src/main/kotlin/com/fitsync/nativeapp/domain/Workout.kt` or a focused `Execution.kt` module.
 
 Given sorted session steps and groups:
 
@@ -515,13 +501,13 @@ step 2 set 3
 step 3 set 3
 ```
 
-`prescribedRestSeconds` continues to resolve rest from the actual entry's
+`restSeconds` continues to resolve rest from the actual entry's
 planned step and `set_number`. Because grouped steps require explicit rests,
 it must not use the 120-second fallback for them.
 
 ### 10.2 Planned-session preview
 
-Update `apps/mobile/app/planned-session/[id].tsx` to render a group as one
+Update `apps/android/app/src/main/kotlin/com/fitsync/nativeapp/MainActivity.kt` to render a group as one
 visual section rather than unrelated cards:
 
 - header: explicit label or generated `Superset`/`Circuit` label;
@@ -620,7 +606,7 @@ At minimum cover:
 - `rest_seconds` resolves per member and per round;
 - zero rest does not activate the timer;
 - legacy JSON without `groups` parses successfully;
-- invalid server group shapes fail Zod parsing rather than being guessed at.
+- invalid server group shapes fail contract validation rather than being guessed at.
 
 Update the E2E fixture to use two real structured supersets and remove grouping
 meaning from its notes. Notes may retain ordinary cues. E2E must prove:
@@ -647,7 +633,7 @@ sandbox as required by `AGENTS.md`:
 ./scripts/test-mobile-e2e.sh
 ```
 
-Focused mobile unit tests may be run during iteration through the existing npm
+Focused mobile unit tests may be run during iteration through the repository
 test command, but they do not replace the repository entrypoints.
 
 The implementation is accepted only when:
@@ -847,7 +833,7 @@ Implement in this order to keep each stage testable:
    idempotency lookup with focused Go tests.
 3. Add MCP schemas/conversion/ID resolution and tests.
 4. Add OpenAPI types, regenerate Go HTTP types, convert REST output, and test.
-5. Add mobile TypeScript/Zod contracts and legacy parsing tests.
+5. Add mobile Kotlin contracts and legacy parsing tests.
 6. Add pure execution expansion/rest helpers and exhaustive unit tests.
 7. Update planned-session preview and active-workout rendering/timer behavior.
 8. Update fixtures and mobile E2E tests.
