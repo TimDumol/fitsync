@@ -26,7 +26,7 @@ pocketid_gid: "1000"
 
 # Exact release tags are deliberately used instead of floating major tags.
 # An operator may override this with the digest of the tested release.
-fitness_pocketid_image: ghcr.io/pocket-id/pocket-id:v2.12.0
+fitness_pocketid_image: ghcr.io/pocket-id/pocket-id:v2.19.1@sha256:f085157f0b6ea4b2e8aa5ecfd99eada0d83a4960f3a3dcfd46014097d0ef7ab5
 fitness_issuer: https://auth.aries.timdumol.com
 fitness_resource: https://api.aries.timdumol.com/mcp
 fitness_auth_domain: auth.aries.timdumol.com
